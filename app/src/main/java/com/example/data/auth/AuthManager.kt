@@ -8,7 +8,6 @@ import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.GetCredentialException
-import com.example.R
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
@@ -82,7 +81,16 @@ class AuthManager(private val context: Context) {
 
     private fun resolveWebClientId(): String? {
         return try {
-            appContext.getString(R.string.default_web_client_id).takeIf { it.isNotBlank() }
+            val resId = appContext.resources.getIdentifier(
+                "default_web_client_id",
+                "string",
+                appContext.packageName
+            )
+            if (resId != 0) {
+                appContext.getString(resId).takeIf { it.isNotBlank() }
+            } else {
+                null
+            }
         } catch (_: Exception) {
             null
         }
