@@ -30,17 +30,29 @@ jobs:
           fi
           ls -la "$SDK_ROOT/licenses"
 
-      - name: Ensure debug.keystore exists
+      - name: Configure personal release signing keystore
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          SECRET_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          SECRET_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          SECRET_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          if [ ! -f debug.keystore ]; then
-            if [ -f debug.keystore.base64 ]; then
-              base64 -d debug.keystore.base64 > debug.keystore
-            else
-              keytool -genkeypair -v -keystore debug.keystore \
-                -storepass android -alias androiddebugkey -keypass android \
-                -keyalg RSA -keysize 2048 -validity 10000 \
-                -dname "CN=Android Debug,O=Android,C=US"
-            fi
+          if [ -n "$RELEASE_KEYSTORE_BASE64" ]; then
+            printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 -d > release-personal.jks
+            echo "KEYSTORE_PATH=${{ github.workspace }}/release-personal.jks" >> "$GITHUB_ENV"
+            echo "STORE_PASSWORD=$SECRET_STORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "KEY_ALIAS=${SECRET_KEY_ALIAS:-upload}" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=$SECRET_KEY_PASSWORD" >> "$GITHUB_ENV"
+          else
+            rm -f release-personal.jks
+            keytool -genkeypair -v -keystore release-personal.jks \
+              -storepass "RakshaOne#2026" -alias "rakshaone_release" -keypass "RakshaOne#2026" \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Susanta Banik,OU=RakshaOne,O=Susanta Banik"
+            echo "KEYSTORE_PATH=${{ github.workspace }}/release-personal.jks" >> "$GITHUB_ENV"
+            echo "STORE_PASSWORD=RakshaOne#2026" >> "$GITHUB_ENV"
+            echo "KEY_ALIAS=rakshaone_release" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=RakshaOne#2026" >> "$GITHUB_ENV"
           fi
 
       - name: Set up Gradle 9.3.1
@@ -51,8 +63,20 @@ jobs:
       - name: Build RakshaOne Release APK
         run: gradle :app:assembleRelease --no-daemon --stacktrace
 
-      - name: Prepare RakshaOne.apk
-        run: cp app/build/outputs/apk/release/app-release.apk RakshaOne.apk
+      - name: Prepare RakshaOne.apk & verify signature
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk RakshaOne.apk
+          APKSIGNER=$(ls -1d "${ANDROID_HOME:-/usr/local/lib/android/sdk}"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n 1 || true)
+          {
+            echo "### RakshaOne APK Signing Certificate"
+            echo '```'
+            if [ -n "$APKSIGNER" ]; then
+              "$APKSIGNER" verify --print-certs RakshaOne.apk
+            else
+              keytool -list -v -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload RakshaOne.apk
         uses: actions/upload-artifact@v4
