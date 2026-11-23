@@ -1,0 +1,436 @@
+{
+  "entities": {
+    "UserSafetyProfile": {
+      "title": "UserSafetyProfile",
+      "description": "Authenticated user's RakshaOne emergency safety and medical profile synced across sign-ins.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "bloodGroup": { "type": "string" },
+        "allergies": { "type": "string" },
+        "medicalNotes": { "type": "string" },
+        "homeAddress": { "type": "string" },
+        "workAddress": { "type": "string" },
+        "autoSendSmsOnSos": { "type": "boolean" },
+        "sirenBeaconEnabled": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "userId", "displayName", "email", "phone", "bloodGroup",
+        "allergies", "medicalNotes", "homeAddress", "workAddress",
+        "autoSendSmsOnSos", "sirenBeaconEnabled", "createdAt", "updatedAt"
+      ]
+    },
+    "EmergencyDispatch": {
+      "title": "EmergencyDispatch",
+      "description": "Automated SOS, Anti-Snatch, Trip Anomaly, and Fake Call Guard cloud dispatch payload readable by owner and verified trusted guardian emails/UIDs.",
+      "type": "object",
+      "properties": {
+        "dispatchId": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "ownerName": { "type": "string" },
+        "ownerPhone": { "type": "string" },
+        "alertType": { "type": "string" },
+        "status": { "type": "string" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "accuracyMeters": { "type": "number" },
+        "mapsUrl": { "type": "string" },
+        "locationSummary": { "type": "string" },
+        "batteryPercent": { "type": "integer" },
+        "medicalSummary": { "type": "string" },
+        "evidenceSummary": { "type": "string" },
+        "frontPhotoBase64": { "type": "string" },
+        "rearPhotoBase64": { "type": "string" },
+        "authorizedEmails": { "type": "array" },
+        "authorizedPhones": { "type": "array" },
+        "authorizedUids": { "type": "array" },
+        "deviceLocked": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "dispatchId", "ownerUid", "ownerName", "ownerPhone",
+        "alertType", "status", "latitude", "longitude", "accuracyMeters",
+        "mapsUrl", "locationSummary", "batteryPercent", "medicalSummary",
+        "evidenceSummary", "frontPhotoBase64", "rearPhotoBase64",
+        "authorizedEmails", "authorizedPhones", "authorizedUids", "deviceLocked",
+        "createdAt", "updatedAt"
+      ]
+    },
+    "PhoneDirectoryEntry": {
+      "title": "PhoneDirectoryEntry",
+      "description": "Digits-only phone lookup record mapping installed RakshaOne users to their Firebase UID for direct Phone ID push high alerts.",
+      "type": "object",
+      "properties": {
+        "phoneKey": { "type": "string" },
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "appInstalled": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["phoneKey", "uid", "displayName", "email", "appInstalled", "updatedAt"]
+    },
+    "CitizenProfile": {
+      "title": "CitizenProfile",
+      "description": "Zero-start citizen trust & verification profile (UNVERIFIED, 0 points by default).",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "verificationStatus": { "type": "string" },
+        "verificationDocType": { "type": "string" },
+        "docLastFourHint": { "type": "string" },
+        "trustScore": { "type": "integer" },
+        "acceptedHelpsCount": { "type": "integer" },
+        "completedHelpsCount": { "type": "integer" },
+        "declinedHelpsCount": { "type": "integer" },
+        "isVolunteerActive": { "type": "boolean" },
+        "badgeLevel": { "type": "string" },
+        "endorserUid": { "type": "string" },
+        "endorsementCode": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "updatedAt"]
+    },
+    "CitizenVerification": {
+      "title": "CitizenVerification",
+      "description": "Peer-endorsed citizen KYC verification submission (non-admin).",
+      "type": "object",
+      "properties": {
+        "verificationId": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "docType": { "type": "string" },
+        "docLastFourHint": { "type": "string" },
+        "endorsementCode": { "type": "string" },
+        "status": { "type": "string" },
+        "endorserUid": { "type": "string" },
+        "endorserName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["verificationId", "ownerUid", "endorsementCode", "status", "createdAt", "updatedAt"]
+    },
+    "PointsLedgerEntry": {
+      "title": "PointsLedgerEntry",
+      "description": "Append-only ledger of responder trust point awards and deductions.",
+      "type": "object",
+      "properties": {
+        "entryId": { "type": "string" },
+        "citizenUid": { "type": "string" },
+        "delta": { "type": "integer" },
+        "balanceAfter": { "type": "integer" },
+        "reasonCode": { "type": "string" },
+        "relatedIncidentId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["entryId", "citizenUid", "delta", "balanceAfter", "reasonCode", "createdAt"]
+    },
+    "IncidentRecord": {
+      "title": "IncidentRecord",
+      "description": "Risk-classified incident record with R0-R3 state and escalation eligibility.",
+      "type": "object",
+      "properties": {
+        "incidentId": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "type": { "type": "string" },
+        "riskLevel": { "type": "string" },
+        "policeEscalationEligible": { "type": "boolean" },
+        "status": { "type": "string" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "locationDescription": { "type": "string" },
+        "description": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["incidentId", "ownerUid", "riskLevel", "policeEscalationEligible", "status", "updatedAt"]
+    },
+    "RiskAssessment": {
+      "title": "RiskAssessment",
+      "description": "Explainable risk classification assessment snapshot (R0_NORMAL..R3_CRITICAL).",
+      "type": "object",
+      "properties": {
+        "assessmentId": { "type": "string" },
+        "incidentId": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "riskLevel": { "type": "string" },
+        "triggerOrigin": { "type": "string" },
+        "confidence": { "type": "number" },
+        "policeEscalationEligible": { "type": "boolean" },
+        "reasonCodes": { "type": "array" },
+        "explanation": { "type": "string" },
+        "policyVersion": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["assessmentId", "incidentId", "ownerUid", "riskLevel", "triggerOrigin", "policeEscalationEligible", "createdAt"]
+    },
+    "EmergencyEscalationEvent": {
+      "title": "EmergencyEscalationEvent",
+      "description": "Police / 112 escalation event strictly restricted to explicit R3_CRITICAL SOS incidents.",
+      "type": "object",
+      "properties": {
+        "incidentId": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "assessmentId": { "type": "string" },
+        "riskLevel": { "type": "string" },
+        "triggerOrigin": { "type": "string" },
+        "policeEscalationEligible": { "type": "boolean" },
+        "policeStatus": { "type": "string" },
+        "deliveryState": { "type": "string" },
+        "webPortalUrl": { "type": "string" },
+        "dossierToken": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "incidentId", "ownerUid", "assessmentId", "riskLevel",
+        "triggerOrigin", "policeEscalationEligible", "policeStatus",
+        "deliveryState", "updatedAt"
+      ]
+    },
+    "DispatchAttempt": {
+      "title": "DispatchAttempt",
+      "description": "Audited channel attempt record (112 dialer, 112 SMS, 112 Email, WhatsApp, BLE).",
+      "type": "object",
+      "properties": {
+        "attemptId": { "type": "string" },
+        "incidentId": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "channel": { "type": "string" },
+        "deliveryState": { "type": "string" },
+        "details": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["attemptId", "incidentId", "ownerUid", "channel", "deliveryState", "createdAt"]
+    },
+    "DeliveryReceipt": {
+      "title": "DeliveryReceipt",
+      "description": "Immutable channel delivery receipt linked to a dispatch attempt.",
+      "type": "object",
+      "properties": {
+        "receiptId": { "type": "string" },
+        "attemptId": { "type": "string" },
+        "incidentId": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "channel": { "type": "string" },
+        "state": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["receiptId", "attemptId", "incidentId", "ownerUid", "channel", "state", "updatedAt"]
+    },
+    "DossierAccess": {
+      "title": "DossierAccess",
+      "description": "Token-gated web dossier snapshot for R3_CRITICAL 112 responder portal access.",
+      "type": "object",
+      "properties": {
+        "tokenId": { "type": "string" },
+        "incidentId": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "riskLevel": { "type": "string" },
+        "victimName": { "type": "string" },
+        "victimPhone": { "type": "string" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "accuracyMeters": { "type": "number" },
+        "localityAddress": { "type": "string" },
+        "mapsUrl": { "type": "string" },
+        "medicalSummary": { "type": "string" },
+        "evidenceSummary": { "type": "string" },
+        "policeStatus": { "type": "string" },
+        "expiresAtMillis": { "type": "integer" },
+        "revoked": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["tokenId", "incidentId", "ownerUid", "riskLevel", "revoked", "expiresAtMillis", "createdAt"]
+    },
+    "HexRescueRequest": {
+      "title": "HexRescueRequest",
+      "description": "Six-directional hexagonal pickup request with dynamic expanding radius and responder lifecycle.",
+      "type": "object",
+      "properties": {
+        "requestId": { "type": "string" },
+        "alertId": { "type": "string" },
+        "incidentId": { "type": "string" },
+        "victimUid": { "type": "string" },
+        "victimName": { "type": "string" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "currentRadiusMeters": { "type": "number" },
+        "expansionStage": { "type": "integer" },
+        "dangerType": { "type": "string" },
+        "locationDescription": { "type": "string" },
+        "evidenceSummary": { "type": "string" },
+        "lifecycleState": { "type": "string" },
+        "compassSector": { "type": "string" },
+        "policeStatus": { "type": "string" },
+        "acceptedResponderUid": { "type": "string" },
+        "acceptedResponderName": { "type": "string" },
+        "acceptedResponderPhone": { "type": "string" },
+        "acceptedResponderSelfieB64": { "type": "string" },
+        "acceptedResponderLat": { "type": "number" },
+        "acceptedResponderLng": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["requestId", "incidentId", "victimUid", "latitude", "longitude", "lifecycleState", "updatedAt"]
+    },
+    "LiveRadarPin": {
+      "title": "LiveRadarPin",
+      "description": "Single overwritten live moving-pin location record per user shared with Core Family / permitted circle.",
+      "type": "object",
+      "properties": {
+        "ownerUid": { "type": "string" },
+        "ownerName": { "type": "string" },
+        "relationshipHint": { "type": "string" },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "bearing": { "type": "number" },
+        "speed": { "type": "number" },
+        "battery": { "type": "integer" },
+        "sharingActive": { "type": "boolean" },
+        "isEmergency": { "type": "boolean" },
+        "statusNote": { "type": "string" },
+        "authorizedUids": { "type": "array" },
+        "authorizedEmails": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerUid", "lat", "lng", "battery", "sharingActive", "authorizedUids", "authorizedEmails", "updatedAt"]
+    },
+    "TrustedContactRecord": {
+      "title": "TrustedContactRecord",
+      "description": "User's trusted guardian contact synced under users/{userId}/trusted_contacts.",
+      "type": "object",
+      "properties": {
+        "contactDocId": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "name": { "type": "string" },
+        "relationship": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "priority": { "type": "integer" },
+        "hasWhatsApp": { "type": "boolean" },
+        "allow24x7Location": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["contactDocId", "ownerUid", "name", "phone", "priority", "updatedAt"]
+    },
+    "AiSafetyStateRecord": {
+      "title": "AiSafetyStateRecord",
+      "description": "On-device TFLite sovereignty tier and personalized calibration biases synced under users/{userId}/ai_safety_state.",
+      "type": "object",
+      "properties": {
+        "ownerUid": { "type": "string" },
+        "sovereigntyTier": { "type": "integer" },
+        "autonomousGuardEnabled": { "type": "boolean" },
+        "confirmedSafeCount": { "type": "integer" },
+        "confirmedThreatCount": { "type": "integer" },
+        "fakeCallsTriggeredByAi": { "type": "integer" },
+        "calibrationBiases": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerUid", "sovereigntyTier", "autonomousGuardEnabled", "updatedAt"]
+    },
+    "EvidenceVaultChunk": {
+      "title": "EvidenceVaultChunk",
+      "description": "Chunked auto-uploaded audio (.m4a), photos (.jpg), and video (.mp4) scoped to owner and authorized trusted guardians.",
+      "type": "object",
+      "properties": {
+        "chunkId": { "type": "string" },
+        "incidentId": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "mediaKind": { "type": "string" },
+        "fileName": { "type": "string" },
+        "mimeType": { "type": "string" },
+        "chunkIndex": { "type": "integer" },
+        "totalChunks": { "type": "integer" },
+        "sha256": { "type": "string" },
+        "dataBase64": { "type": "string" },
+        "authorizedUids": { "type": "array" },
+        "authorizedEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "chunkId", "incidentId", "ownerUid", "mediaKind",
+        "chunkIndex", "totalChunks", "dataBase64",
+        "authorizedUids", "authorizedEmails", "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserSafetyProfile" },
+      "description": "Owner-isolated user safety profile."
+    },
+    "/emergency_dispatches/{dispatchId}": {
+      "schema": { "$ref": "#/entities/EmergencyDispatch" },
+      "description": "Owner and trusted-guardian scoped SOS cloud dispatches."
+    },
+    "/phone_directory/{phoneKey}": {
+      "schema": { "$ref": "#/entities/PhoneDirectoryEntry" },
+      "description": "Exact-key Phone ID directory for installed RakshaOne direct push discovery."
+    },
+    "/citizens/{citizenUid}": {
+      "schema": { "$ref": "#/entities/CitizenProfile" },
+      "description": "Citizen verification status, honor badge, and ledger-backed trust score."
+    },
+    "/citizen_verifications/{verificationId}": {
+      "schema": { "$ref": "#/entities/CitizenVerification" },
+      "description": "Peer-endorsed citizen KYC requests."
+    },
+    "/points_ledger/{entryId}": {
+      "schema": { "$ref": "#/entities/PointsLedgerEntry" },
+      "description": "Append-only responder trust score ledger."
+    },
+    "/incidents/{incidentId}": {
+      "schema": { "$ref": "#/entities/IncidentRecord" },
+      "description": "Risk-classified safety incidents."
+    },
+    "/risk_assessments/{assessmentId}": {
+      "schema": { "$ref": "#/entities/RiskAssessment" },
+      "description": "Immutable risk intelligence engine evaluations."
+    },
+    "/emergency_escalation_events/{incidentId}": {
+      "schema": { "$ref": "#/entities/EmergencyEscalationEvent" },
+      "description": "Strictly policy-gated R3_CRITICAL police escalation records."
+    },
+    "/dispatch_attempts/{attemptId}": {
+      "schema": { "$ref": "#/entities/DispatchAttempt" },
+      "description": "Audited dispatch channel attempt log."
+    },
+    "/delivery_receipts/{receiptId}": {
+      "schema": { "$ref": "#/entities/DeliveryReceipt" },
+      "description": "Immutable delivery state receipts."
+    },
+    "/dossier_access/{tokenId}": {
+      "schema": { "$ref": "#/entities/DossierAccess" },
+      "description": "Token-gated web dossier snapshots for R3_CRITICAL 112 responder portal access."
+    },
+    "/hex_rescue_requests/{requestId}": {
+      "schema": { "$ref": "#/entities/HexRescueRequest" },
+      "description": "Active six-directional hexagonal rescue requests."
+    },
+    "/live_radar/{ownerUid}": {
+      "schema": { "$ref": "#/entities/LiveRadarPin" },
+      "description": "Real-time moving-pin radar location scoped to authorized guardians."
+    },
+    "/users/{userId}/trusted_contacts/{contactId}": {
+      "schema": { "$ref": "#/entities/TrustedContactRecord" },
+      "description": "Owner-isolated synced trusted circle contacts."
+    },
+    "/users/{userId}/ai_safety_state/{docId}": {
+      "schema": { "$ref": "#/entities/AiSafetyStateRecord" },
+      "description": "Owner-isolated Sovereign TFLite neural calibration profile."
+    },
+    "/evidence_vault/{chunkId}": {
+      "schema": { "$ref": "#/entities/EvidenceVaultChunk" },
+      "description": "Owner and trusted-guardian scoped chunked audio/photo/video evidence vault."
+    }
+  }
+}

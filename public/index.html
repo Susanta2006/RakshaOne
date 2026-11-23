@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RakshaOne — Live 112 Incident Dossier</title>
+  <style>
+    :root {
+      --bg: #0b1120;
+      --surface: #111827;
+      --card: #1e293b;
+      --border: #334155;
+      --red: #ef4444;
+      --blue: #3b82f6;
+      --teal: #14b8a6;
+      --amber: #f59e0b;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      overscroll-behavior-y: contain;
+    }
+    .container {
+      max-width: 720px;
+      margin: 0 auto;
+      position: relative;
+    }
+    /* Pull-to-refresh container */
+    .ptr-container {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      overflow: hidden;
+      height: 0;
+      opacity: 0;
+      transition: height 0.15s ease-out, opacity 0.15s ease-out;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--teal);
+      margin-bottom: 4px;
+      text-align: center;
+    }
+    .ptr-container.visible {
+      opacity: 1;
+    }
+    .ptr-spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid var(--border);
+      border-top-color: var(--teal);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      display: none;
+    }
+    .ptr-container.loading .ptr-spinner {
+      display: inline-block;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .header {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px;
+      margin-bottom: 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.4px;
+    }
+    .badge-r3 { background: var(--red); color: #fff; }
+    .badge-ok { background: rgba(20,184,166,0.2); color: var(--teal); border: 1px solid var(--teal); }
+    .badge-warn { background: rgba(245,158,11,0.2); color: var(--amber); border: 1px solid var(--amber); }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 14px;
+      touch-action: pan-y;
+      transition: transform 0.15s ease-out;
+    }
+    .sync-status-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      background: rgba(20, 184, 166, 0.1);
+      border: 1px solid rgba(20, 184, 166, 0.25);
+      border-radius: 8px;
+      font-size: 12px;
+      color: var(--teal);
+      font-weight: 600;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .pulse-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      background: var(--teal);
+      border-radius: 50%;
+      margin-right: 6px;
+      box-shadow: 0 0 8px var(--teal);
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0% { opacity: 0.4; transform: scale(0.9); }
+      50% { opacity: 1; transform: scale(1.2); }
+      100% { opacity: 0.4; transform: scale(0.9); }
+    }
+    .label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--muted);
+      font-weight: 700;
+      margin-bottom: 2px;
+    }
+    .value {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      word-break: break-word;
+    }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13px;
+    }
+    .actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 11px 16px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+      border: none;
+      transition: background 0.2s, opacity 0.2s;
+    }
+    .btn-red { background: var(--red); color: #fff; }
+    .btn-blue { background: var(--blue); color: #fff; }
+    .btn-outline {
+      border: 1px solid var(--border);
+      color: var(--text);
+      background: transparent;
+    }
+    .btn-outline:active {
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .error-box {
+      background: rgba(239,68,68,0.14);
+      border: 1px solid var(--red);
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .highlight-update {
+      animation: flashUpdate 1s ease-out;
+    }
+    @keyframes flashUpdate {
+      0% { background-color: rgba(20, 184, 166, 0.25); }
+      100% { background-color: transparent; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container" id="dossier-container">
+    <!-- Pull To Refresh Visual Indicator -->
+    <div id="ptr-box" class="ptr-container">
+      <div id="ptr-spinner" class="ptr-spinner"></div>
+      <span id="ptr-text">↓ Pull down to refresh telemetry</span>
+    </div>
+
+    <div class="header">
+      <div>
+        <div style="font-weight: 900; font-size: 18px;">RakshaOne Emergency Response Dossier</div>
+        <div style="color: var(--muted); font-size: 13px;">Token-Gated Police &amp; Verified Responder Portal</div>
+      </div>
+      <span id="risk-badge" class="badge badge-r3">VERIFYING TOKEN...</span>
+    </div>
+
+    <!-- Active Telemetry Polling Status Bar -->
+    <div id="sync-bar" class="sync-status-bar" style="display: none;">
+      <div>
+        <span class="pulse-dot"></span>
+        <span>Live Telemetry Polling Active (Every 10s)</span>
+      </div>
+      <div id="last-updated-text" style="color: var(--muted); font-size: 11px;">
+        Last updated: Initializing...
+      </div>
+    </div>
+
+    <div id="content" class="card">
+      <div style="color: var(--muted);">Loading encrypted incident dossier from Firestore...</div>
+    </div>
+
+    <div style="color: var(--muted); font-size: 12px; text-align: center; padding: 8px 0;">
+      Strict Escalation Policy Enforced: Only R3_CRITICAL Explicit SOS Incidents Authorize 112 Dossier Issuance.
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const PROJECT_ID = "gen-lang-client-0320672030";
+      const DATABASE_ID = "ai-studio-android-rakshaon-45087928-cfb8-48cb-a931-7b3f2946188e";
+      const POLLING_INTERVAL_MS = 10000; // 10 seconds
+
+      const pathParts = window.location.pathname.split("/").filter(Boolean);
+      const urlParams = new URLSearchParams(window.location.search);
+      const token = (urlParams.get("token") || "").trim();
+      const incidentIdFromPath = pathParts[0] === "dispatch" && pathParts[1] ? decodeURIComponent(pathParts[1]) : "";
+
+      const contentEl = document.getElementById("content");
+      const badgeEl = document.getElementById("risk-badge");
+      const syncBarEl = document.getElementById("sync-bar");
+      const lastUpdatedEl = document.getElementById("last-updated-text");
+      const ptrBox = document.getElementById("ptr-box");
+      const ptrText = document.getElementById("ptr-text");
+      const ptrSpinner = document.getElementById("ptr-spinner");
+
+      let isFetching = false;
+      let pollingTimer = null;
+      let lastDossierData = null;
+
+      function escapeHtml(str) {
+        return String(str || "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      function readField(fields, key) {
+        const f = fields && fields[key];
+        if (!f) return null;
+        if ("stringValue" in f) return f.stringValue;
+        if ("doubleValue" in f) return Number(f.doubleValue);
+        if ("integerValue" in f) return Number(f.integerValue);
+        if ("booleanValue" in f) return Boolean(f.booleanValue);
+        if ("timestampValue" in f) return f.timestampValue;
+        return null;
+      }
+
+      function showError(title, detail) {
+        badgeEl.className = "badge badge-warn";
+        badgeEl.textContent = "ACCESS BLOCKED";
+        syncBarEl.style.display = "none";
+        contentEl.innerHTML =
+          '<div class="error-box">' +
+          '<div style="font-weight:800; font-size:16px; color:#fca5a5; margin-bottom:6px;">' + escapeHtml(title) + '</div>' +
+          '<div style="font-size:13px; color:#f8fafc;">' + escapeHtml(detail) + '</div>' +
+          '</div>';
+      }
+
+      if (!token) {
+        showError(
+          "Dossier Access Token Required",
+          "Authorized dispatch links must include ?token=<dossierToken> issued exclusively for an R3_CRITICAL SOS incident."
+        );
+        return;
+      }
+
+      const docUrl =
+        "https://firestore.googleapis.com/v1/projects/" +
+        encodeURIComponent(PROJECT_ID) +
+        "/databases/" +
+        encodeURIComponent(DATABASE_ID) +
+        "/documents/dossier_access/" +
+        encodeURIComponent(token);
+
+      // Core telemetry fetcher supporting both automatic 10s polling and pull-to-refresh
+      function fetchDossier(isManual) {
+        if (isFetching) return Promise.resolve();
+        isFetching = true;
+
+        if (isManual) {
+          ptrBox.className = "ptr-container visible loading";
+          ptrSpinner.style.display = "inline-block";
+          ptrText.textContent = "Updating telemetry...";
+          const manualBtn = document.getElementById("manual-refresh-btn");
+          if (manualBtn) manualBtn.textContent = "Updating...";
+        }
+
+        return fetch(docUrl)
+          .then(function (res) {
+            if (!res.ok) {
+              throw new Error("HTTP " + res.status + " (Invalid or revoked dossier token)");
+            }
+            return res.json();
+          })
+          .then(function (doc) {
+            const fields = doc.fields || {};
+            const riskLevel = readField(fields, "riskLevel") || "UNKNOWN";
+            const incidentId = readField(fields, "incidentId") || incidentIdFromPath || "N/A";
+            const revoked = Boolean(readField(fields, "revoked"));
+            const expiresAtMillis = Number(readField(fields, "expiresAtMillis") || 0);
+
+            if (incidentIdFromPath && incidentId !== incidentIdFromPath) {
+              showError("Incident Mismatch", "The dossier token does not belong to incident " + incidentIdFromPath + ".");
+              stopPolling();
+              return;
+            }
+            if (riskLevel !== "R3_CRITICAL") {
+              showError("Policy Enforcement Rejection", "Non-critical incidents cannot expose a 112 escalation dossier.");
+              stopPolling();
+              return;
+            }
+            if (revoked || (expiresAtMillis > 0 && Date.now() > expiresAtMillis)) {
+              showError("Dossier Link Expired or Revoked", "This temporary responder access token is no longer active.");
+              stopPolling();
+              return;
+            }
+
+            const victimName = readField(fields, "victimName") || "Citizen in Distress";
+            const victimPhone = readField(fields, "victimPhone") || "Not provided";
+            const lat = readField(fields, "latitude") || 0;
+            const lng = readField(fields, "longitude") || 0;
+            const accuracy = readField(fields, "accuracyMeters") || 0;
+            const locality = readField(fields, "localityAddress") || "GPS fix recorded";
+            const mapsUrl = readField(fields, "mapsUrl") || ("https://maps.google.com/?q=" + lat + "," + lng);
+            const medical = readField(fields, "medicalSummary") || "None recorded";
+            const evidence = readField(fields, "evidenceSummary") || "SHA-256 verification pending";
+            const policeStatus = readField(fields, "policeStatus") || "ELIGIBLE";
+
+            badgeEl.className = "badge badge-r3";
+            badgeEl.textContent = "R3_CRITICAL • " + policeStatus;
+            syncBarEl.style.display = "flex";
+
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            lastUpdatedEl.textContent = "Last updated: " + timeStr + (isManual ? " (manual)" : " (auto)");
+
+            // Check if coordinates or medical data changed to trigger subtle highlight
+            const hasLocationChanged = lastDossierData && (lastDossierData.lat !== lat || lastDossierData.lng !== lng);
+            const hasMedicalChanged = lastDossierData && (lastDossierData.medical !== medical);
+
+            lastDossierData = { lat: lat, lng: lng, medical: medical };
+
+            contentEl.innerHTML =
+              '<div class="label">Incident Identifier</div>' +
+              '<div class="value mono">' + escapeHtml(incidentId) + '</div>' +
+              '<div class="label">Citizen Name &amp; Contact</div>' +
+              '<div class="value">' + escapeHtml(victimName) + ' • ' + escapeHtml(victimPhone) + '</div>' +
+              '<div class="label">Live Location Coordinates &amp; Accuracy</div>' +
+              '<div class="value' + (hasLocationChanged ? ' highlight-update' : '') + '">' + escapeHtml(locality) + '<br/><span class="mono">' +
+                Number(lat).toFixed(5) + ', ' + Number(lng).toFixed(5) + ' (±' + Math.round(Number(accuracy)) + 'm)</span></div>' +
+              '<div class="label">Critical Medical Identity &amp; Notes</div>' +
+              '<div class="value' + (hasMedicalChanged ? ' highlight-update' : '') + '">' + escapeHtml(medical) + '</div>' +
+              '<div class="label">Tamper-Evident SHA-256 Evidence Summary</div>' +
+              '<div class="value mono" style="color: var(--teal);">' + escapeHtml(evidence) + '</div>' +
+              '<div class="actions">' +
+                '<a class="btn btn-red" href="tel:112">Dial 112 ERSS</a>' +
+                '<a class="btn btn-blue" target="_blank" rel="noopener noreferrer" href="' + escapeHtml(mapsUrl) + '">Open GPS in Maps</a>' +
+                '<button id="manual-refresh-btn" class="btn btn-outline" onclick="window.manualRefreshDossier()">🔄 Refresh Telemetry</button>' +
+              '</div>';
+          })
+          .catch(function (err) {
+            showError("Unable to Verify Live Dossier", err.message || "Token not found or access denied.");
+            stopPolling();
+          })
+          .finally(function () {
+            isFetching = false;
+            if (isManual) {
+              ptrText.textContent = "✓ Telemetry updated";
+              ptrSpinner.style.display = "none";
+              setTimeout(function () {
+                ptrBox.style.height = "0";
+                ptrBox.className = "ptr-container";
+              }, 600);
+            }
+          });
+      }
+
+      // Expose manual refresh globally for button click without reloading the page
+      window.manualRefreshDossier = function () {
+        fetchDossier(true);
+      };
+
+      // 10-Second Polling Mechanism
+      function startPolling() {
+        stopPolling();
+        pollingTimer = setInterval(function () {
+          fetchDossier(false);
+        }, POLLING_INTERVAL_MS);
+      }
+
+      function stopPolling() {
+        if (pollingTimer) {
+          clearInterval(pollingTimer);
+          pollingTimer = null;
+        }
+      }
+
+      // Pause polling if tab is hidden to save battery & resume immediately upon tab visible
+      document.addEventListener("visibilitychange", function () {
+        if (document.hidden) {
+          stopPolling();
+        } else {
+          fetchDossier(false);
+          startPolling();
+        }
+      });
+
+      // --- PULL TO REFRESH MECHANISM FOR DOSSIER CARD ---
+      let startY = 0;
+      let currentY = 0;
+      let isPulling = false;
+      const PULL_THRESHOLD = 70;
+
+      window.addEventListener("touchstart", function (e) {
+        if (window.scrollY === 0) {
+          startY = e.touches[0].clientY;
+          isPulling = true;
+        }
+      }, { passive: true });
+
+      window.addEventListener("touchmove", function (e) {
+        if (!isPulling) return;
+        currentY = e.touches[0].clientY;
+        const diff = currentY - startY;
+
+        if (diff > 0 && window.scrollY === 0) {
+          const pullDistance = Math.min(diff * 0.45, 90);
+          ptrBox.style.height = pullDistance + "px";
+          ptrBox.className = "ptr-container visible";
+          if (pullDistance >= PULL_THRESHOLD * 0.45) {
+            ptrText.textContent = "↑ Release to update telemetry";
+          } else {
+            ptrText.textContent = "↓ Pull down to refresh telemetry";
+          }
+        }
+      }, { passive: true });
+
+      window.addEventListener("touchend", function () {
+        if (!isPulling) return;
+        isPulling = false;
+        const diff = currentY - startY;
+
+        if (diff * 0.45 >= PULL_THRESHOLD * 0.45 && window.scrollY === 0) {
+          fetchDossier(true);
+        } else {
+          ptrBox.style.height = "0";
+          ptrBox.className = "ptr-container";
+        }
+        startY = 0;
+        currentY = 0;
+      }, { passive: true });
+
+      // Initial Fetch & Start Polling
+      fetchDossier(false).then(function () {
+        startPolling();
+      });
+    })();
+  </script>
+</body>
+</html>

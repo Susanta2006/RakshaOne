@@ -1,0 +1,617 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: Deny all reads and writes by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedEmailGuardian(data) {
+      return isSignedIn() &&
+             request.auth.token.email != null &&
+             request.auth.token.email_verified == true &&
+             request.auth.token.email.lower() in data.authorizedEmails;
+    }
+
+    function isExplicitSosOrigin(origin) {
+      return origin in [
+        'USER_EXPLICIT_SOS_COUNTDOWN',
+        'USER_EXPLICIT_INSTANT_SOS',
+        'USER_EXPLICIT_DURESS_PIN'
+      ];
+    }
+
+    function isValidUserSafetyProfile(data) {
+      return data.userId is string && data.userId == request.auth.uid && data.userId.size() <= 128 &&
+             data.displayName is string && data.displayName.size() <= 100 &&
+             data.email is string && data.email.size() <= 200 &&
+             data.phone is string && data.phone.size() <= 30 &&
+             data.bloodGroup is string && data.bloodGroup.size() <= 16 &&
+             data.allergies is string && data.allergies.size() <= 300 &&
+             data.medicalNotes is string && data.medicalNotes.size() <= 500 &&
+             data.homeAddress is string && data.homeAddress.size() <= 300 &&
+             data.workAddress is string && data.workAddress.size() <= 300 &&
+             data.autoSendSmsOnSos is bool &&
+             data.sirenBeaconEnabled is bool;
+    }
+
+    function isValidEmergencyDispatch(data) {
+      return data.dispatchId is string && isValidId(data.dispatchId) &&
+             data.ownerUid is string && data.ownerUid == request.auth.uid && data.ownerUid.size() <= 128 &&
+             data.ownerName is string && data.ownerName.size() <= 100 &&
+             data.ownerPhone is string && data.ownerPhone.size() <= 30 &&
+             data.alertType is string && data.alertType in ['SOS', 'ANTI_SNATCH', 'TRIP_ANOMALY', 'FAKE_CALL_GUARD'] &&
+             data.status is string && data.status in ['ACTIVE', 'CAPTURED', 'RESOLVED', 'CANCELLED'] &&
+             data.latitude is number && data.latitude >= -90 && data.latitude <= 90 &&
+             data.longitude is number && data.longitude >= -180 && data.longitude <= 180 &&
+             data.accuracyMeters is number && data.accuracyMeters >= 0 &&
+             data.mapsUrl is string && data.mapsUrl.size() <= 300 &&
+             data.locationSummary is string && data.locationSummary.size() <= 300 &&
+             data.batteryPercent is int && data.batteryPercent >= 0 && data.batteryPercent <= 100 &&
+             data.medicalSummary is string && data.medicalSummary.size() <= 500 &&
+             data.evidenceSummary is string && data.evidenceSummary.size() <= 800 &&
+             data.frontPhotoBase64 is string && data.frontPhotoBase64.size() <= 120000 &&
+             data.rearPhotoBase64 is string && data.rearPhotoBase64.size() <= 120000 &&
+             data.authorizedEmails is list && data.authorizedEmails.size() <= 15 &&
+             (data.authorizedEmails.size() == 0 || data.authorizedEmails[0] is string) &&
+             data.authorizedPhones is list && data.authorizedPhones.size() <= 15 &&
+             (data.authorizedPhones.size() == 0 || data.authorizedPhones[0] is string) &&
+             data.authorizedUids is list && data.authorizedUids.size() <= 15 &&
+             (data.authorizedUids.size() == 0 || data.authorizedUids[0] is string) &&
+             data.deviceLocked is bool;
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if false;
+
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       incoming().keys().hasAll([
+                         'userId', 'displayName', 'email', 'phone', 'bloodGroup',
+                         'allergies', 'medicalNotes', 'homeAddress', 'workAddress',
+                         'autoSendSmsOnSos', 'sirenBeaconEnabled', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'displayName', 'email', 'phone', 'bloodGroup',
+                         'allergies', 'medicalNotes', 'homeAddress', 'workAddress',
+                         'autoSendSmsOnSos', 'sirenBeaconEnabled', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().createdAt is timestamp &&
+                       incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp &&
+                       incoming().updatedAt <= request.time &&
+                       isValidUserSafetyProfile(incoming());
+
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       isValidUserSafetyProfile(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp &&
+                       incoming().updatedAt <= request.time &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'displayName', 'email', 'phone', 'bloodGroup',
+                         'allergies', 'medicalNotes', 'homeAddress', 'workAddress',
+                         'autoSendSmsOnSos', 'sirenBeaconEnabled', 'updatedAt'
+                       ]);
+
+      allow delete: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+
+      match /trusted_contacts/{contactId} {
+        allow get, list: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+        allow create, update: if isSignedIn() &&
+                                 isValidId(userId) &&
+                                 isValidId(contactId) &&
+                                 request.auth.uid == userId &&
+                                 incoming().contactDocId == contactId &&
+                                 incoming().ownerUid == userId &&
+                                 incoming().name is string && incoming().name.size() <= 100 &&
+                                 incoming().relationship is string && incoming().relationship.size() <= 40 &&
+                                 incoming().phone is string && incoming().phone.size() <= 30 &&
+                                 incoming().email is string && incoming().email.size() <= 200 &&
+                                 incoming().priority is int && incoming().priority >= 1 && incoming().priority <= 20 &&
+                                 incoming().hasWhatsApp is bool &&
+                                 incoming().allow24x7Location is bool &&
+                                 incoming().updatedAt is timestamp;
+        allow delete: if isSignedIn() && isValidId(userId) && isValidId(contactId) && request.auth.uid == userId;
+      }
+
+      match /ai_safety_state/{docId} {
+        allow get, list: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+        allow create, update: if isSignedIn() &&
+                                 isValidId(userId) &&
+                                 isValidId(docId) &&
+                                 request.auth.uid == userId &&
+                                 incoming().ownerUid == userId &&
+                                 incoming().sovereigntyTier is int && incoming().sovereigntyTier in [1, 2, 3] &&
+                                 incoming().autonomousGuardEnabled is bool &&
+                                 incoming().confirmedSafeCount is int && incoming().confirmedSafeCount >= 0 &&
+                                 incoming().confirmedThreatCount is int && incoming().confirmedThreatCount >= 0 &&
+                                 incoming().fakeCallsTriggeredByAi is int && incoming().fakeCallsTriggeredByAi >= 0 &&
+                                 incoming().calibrationBiases is list && incoming().calibrationBiases.size() <= 10 &&
+                                 incoming().updatedAt is timestamp;
+        allow delete: if isSignedIn() && isValidId(userId) && isValidId(docId) && request.auth.uid == userId;
+      }
+    }
+
+    match /emergency_dispatches/{dispatchId} {
+      allow get: if isValidId(dispatchId) && isSignedIn() && (
+        existing().ownerUid == request.auth.uid ||
+        request.auth.uid in existing().authorizedUids ||
+        isVerifiedEmailGuardian(existing())
+      );
+
+      allow list: if isSignedIn() && (
+        existing().ownerUid == request.auth.uid ||
+        request.auth.uid in existing().authorizedUids ||
+        isVerifiedEmailGuardian(existing())
+      );
+
+      allow create: if isSignedIn() &&
+                       isValidId(dispatchId) &&
+                       incoming().ownerUid == request.auth.uid &&
+                       incoming().dispatchId == dispatchId &&
+                       incoming().keys().hasAll([
+                         'dispatchId', 'ownerUid', 'ownerName', 'ownerPhone',
+                         'alertType', 'status', 'latitude', 'longitude', 'accuracyMeters',
+                         'mapsUrl', 'locationSummary', 'batteryPercent', 'medicalSummary',
+                         'evidenceSummary', 'frontPhotoBase64', 'rearPhotoBase64',
+                         'authorizedEmails', 'authorizedPhones', 'authorizedUids', 'deviceLocked',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'dispatchId', 'ownerUid', 'ownerName', 'ownerPhone',
+                         'alertType', 'status', 'latitude', 'longitude', 'accuracyMeters',
+                         'mapsUrl', 'locationSummary', 'batteryPercent', 'medicalSummary',
+                         'evidenceSummary', 'frontPhotoBase64', 'rearPhotoBase64',
+                         'authorizedEmails', 'authorizedPhones', 'authorizedUids', 'deviceLocked',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().createdAt is timestamp &&
+                       incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp &&
+                       incoming().updatedAt <= request.time &&
+                       isValidEmergencyDispatch(incoming());
+
+      allow update: if isSignedIn() &&
+                       isValidId(dispatchId) &&
+                       existing().ownerUid == request.auth.uid &&
+                       !(existing().status in ['RESOLVED', 'CANCELLED']) &&
+                       isValidEmergencyDispatch(incoming()) &&
+                       incoming().ownerUid == existing().ownerUid &&
+                       incoming().dispatchId == existing().dispatchId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp &&
+                       incoming().updatedAt <= request.time &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'ownerName', 'ownerPhone', 'alertType', 'status',
+                         'latitude', 'longitude', 'accuracyMeters', 'mapsUrl',
+                         'locationSummary', 'batteryPercent', 'medicalSummary',
+                         'evidenceSummary', 'frontPhotoBase64', 'rearPhotoBase64',
+                         'authorizedEmails', 'authorizedPhones', 'authorizedUids', 'deviceLocked', 'updatedAt'
+                       ]);
+
+      allow delete: if isSignedIn() && isValidId(dispatchId) && existing().ownerUid == request.auth.uid;
+    }
+
+    match /phone_directory/{phoneKey} {
+      allow get: if isSignedIn() && isValidId(phoneKey);
+      allow list: if false;
+
+      allow create: if isSignedIn() &&
+                       isValidId(phoneKey) &&
+                       incoming().keys().hasAll([
+                         'phoneKey', 'uid', 'displayName', 'email', 'appInstalled', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'phoneKey', 'uid', 'displayName', 'email', 'appInstalled', 'updatedAt'
+                       ]) &&
+                       incoming().phoneKey == phoneKey &&
+                       incoming().uid == request.auth.uid &&
+                       incoming().displayName is string && incoming().displayName.size() <= 100 &&
+                       incoming().email is string && incoming().email.size() <= 200 &&
+                       incoming().appInstalled is bool &&
+                       incoming().updatedAt is timestamp &&
+                       incoming().updatedAt <= request.time;
+
+      allow update: if isSignedIn() &&
+                       isValidId(phoneKey) &&
+                       existing().uid == request.auth.uid &&
+                       incoming().uid == request.auth.uid &&
+                       incoming().phoneKey == phoneKey &&
+                       incoming().displayName is string && incoming().displayName.size() <= 100 &&
+                       incoming().email is string && incoming().email.size() <= 200 &&
+                       incoming().appInstalled is bool &&
+                       incoming().updatedAt is timestamp &&
+                       incoming().updatedAt <= request.time &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'phoneKey', 'uid', 'displayName', 'email', 'appInstalled', 'updatedAt'
+                       ]);
+
+      allow delete: if isSignedIn() && isValidId(phoneKey) && existing().uid == request.auth.uid;
+    }
+
+    // Zero-Start Citizen Profiles & Peer-Endorsed KYC (Cannot self-verify)
+    match /citizens/{citizenUid} {
+      allow get: if isSignedIn() && isValidId(citizenUid) && request.auth.uid == citizenUid;
+      allow list: if false;
+
+      allow create: if isSignedIn() &&
+                       isValidId(citizenUid) &&
+                       request.auth.uid == citizenUid &&
+                       incoming().uid == citizenUid &&
+                       (!('verificationStatus' in incoming()) || incoming().verificationStatus in ['UNVERIFIED', 'PENDING']) &&
+                       (!('trustScore' in incoming()) || incoming().trustScore == 0) &&
+                       (!('isVolunteerActive' in incoming()) || incoming().isVolunteerActive == false) &&
+                       (!('acceptedHelpsCount' in incoming()) || incoming().acceptedHelpsCount == 0) &&
+                       (!('completedHelpsCount' in incoming()) || incoming().completedHelpsCount == 0) &&
+                       (!('declinedHelpsCount' in incoming()) || incoming().declinedHelpsCount == 0) &&
+                       incoming().updatedAt is timestamp;
+
+      allow update: if isSignedIn() && isValidId(citizenUid) && (
+        (
+          // Owner self-updates profile/KYC/ledger-bounded score, but CANNOT self-grant VERIFIED status
+          request.auth.uid == citizenUid &&
+          incoming().uid == citizenUid &&
+          incoming().updatedAt is timestamp &&
+          (
+            !('verificationStatus' in incoming()) ||
+            incoming().verificationStatus == existing().get('verificationStatus', 'UNVERIFIED') ||
+            (existing().get('verificationStatus', 'UNVERIFIED') in ['UNVERIFIED', 'PENDING'] && incoming().verificationStatus == 'PENDING')
+          ) &&
+          (
+            !('isVolunteerActive' in incoming()) ||
+            incoming().isVolunteerActive == false ||
+            existing().get('verificationStatus', 'UNVERIFIED') == 'VERIFIED'
+          ) &&
+          (
+            !('trustScore' in incoming()) ||
+            (
+              incoming().trustScore is int &&
+              incoming().trustScore >= 0 &&
+              incoming().trustScore <= 1000 &&
+              (incoming().trustScore - existing().get('trustScore', 0)) <= 25
+            )
+          )
+        ) || (
+          // Non-admin trusted peer endorsement ONLY (must be a different user)
+          request.auth.uid != citizenUid &&
+          incoming().uid == citizenUid &&
+          incoming().verificationStatus == 'VERIFIED' &&
+          incoming().endorserUid == request.auth.uid &&
+          existing().get('verificationStatus', 'UNVERIFIED') in ['UNVERIFIED', 'PENDING'] &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'uid', 'verificationStatus', 'endorserUid', 'badgeLevel', 'updatedAt'
+          ]) &&
+          incoming().updatedAt is timestamp
+        )
+      );
+
+      allow delete: if false;
+    }
+
+    match /citizen_verifications/{verificationId} {
+      allow get: if isSignedIn() && isValidId(verificationId) && (
+        existing().ownerUid == request.auth.uid ||
+        existing().status == 'PENDING' ||
+        existing().endorserUid == request.auth.uid
+      );
+      allow list: if isSignedIn() && (
+        existing().ownerUid == request.auth.uid ||
+        existing().status == 'PENDING' ||
+        existing().endorserUid == request.auth.uid
+      );
+
+      allow create: if isSignedIn() &&
+                       isValidId(verificationId) &&
+                       incoming().verificationId == verificationId &&
+                       incoming().ownerUid == request.auth.uid &&
+                       incoming().status == 'PENDING' &&
+                       incoming().endorserUid == null &&
+                       incoming().docType is string && incoming().docType.size() <= 60 &&
+                       incoming().docLastFourHint is string && incoming().docLastFourHint.size() <= 8 &&
+                       incoming().endorsementCode is string && incoming().endorsementCode.size() >= 4 && incoming().endorsementCode.size() <= 24 &&
+                       incoming().createdAt is timestamp &&
+                       incoming().updatedAt is timestamp;
+
+      allow update: if isSignedIn() &&
+                       isValidId(verificationId) &&
+                       existing().status == 'PENDING' &&
+                       existing().ownerUid != request.auth.uid &&
+                       incoming().ownerUid == existing().ownerUid &&
+                       incoming().verificationId == existing().verificationId &&
+                       incoming().endorsementCode == existing().endorsementCode &&
+                       incoming().status == 'VERIFIED' &&
+                       incoming().endorserUid == request.auth.uid &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'status', 'endorserUid', 'endorserName', 'updatedAt'
+                       ]) &&
+                       incoming().updatedAt is timestamp;
+
+      allow delete: if false;
+    }
+
+    match /points_ledger/{entryId} {
+      allow get, list: if isSignedIn() && existing().citizenUid == request.auth.uid;
+      allow create: if isSignedIn() &&
+                       isValidId(entryId) &&
+                       incoming().entryId == entryId &&
+                       incoming().citizenUid == request.auth.uid &&
+                       incoming().delta is int && incoming().delta >= -50 && incoming().delta <= 25 &&
+                       incoming().balanceAfter is int && incoming().balanceAfter >= 0 && incoming().balanceAfter <= 1000 &&
+                       incoming().reasonCode is string && incoming().reasonCode.size() <= 60 &&
+                       incoming().createdAt is timestamp;
+      allow update, delete: if false;
+    }
+
+    match /incidents/{incidentId} {
+      allow get, list: if isSignedIn() && existing().ownerUid == request.auth.uid;
+      allow create, update: if isSignedIn() &&
+                               isValidId(incidentId) &&
+                               incoming().incidentId == incidentId &&
+                               incoming().ownerUid == request.auth.uid &&
+                               incoming().riskLevel in ['R0_NORMAL', 'R1_ATTENTION', 'R2_HIGH', 'R3_CRITICAL'] &&
+                               incoming().policeEscalationEligible == (incoming().riskLevel == 'R3_CRITICAL') &&
+                               incoming().latitude is number && incoming().latitude >= -90 && incoming().latitude <= 90 &&
+                               incoming().longitude is number && incoming().longitude >= -180 && incoming().longitude <= 180 &&
+                               incoming().updatedAt is timestamp;
+      allow delete: if false;
+    }
+
+    match /risk_assessments/{assessmentId} {
+      allow get, list: if isSignedIn() && existing().ownerUid == request.auth.uid;
+      allow create: if isSignedIn() &&
+                       isValidId(assessmentId) &&
+                       incoming().assessmentId == assessmentId &&
+                       incoming().ownerUid == request.auth.uid &&
+                       incoming().riskLevel in ['R0_NORMAL', 'R1_ATTENTION', 'R2_HIGH', 'R3_CRITICAL'] &&
+                       incoming().policeEscalationEligible == (incoming().riskLevel == 'R3_CRITICAL') &&
+                       incoming().createdAt is timestamp;
+      allow update, delete: if false;
+    }
+
+    // NON-BYPASSABLE EMERGENCY ESCALATION POLICY GATE:
+    // ONLY R3_CRITICAL incidents with explicit SOS origin may exist in emergency_escalation_events.
+    match /emergency_escalation_events/{incidentId} {
+      allow get, list: if isSignedIn() && existing().ownerUid == request.auth.uid;
+      allow create, update: if isSignedIn() &&
+                               isValidId(incidentId) &&
+                               incoming().incidentId == incidentId &&
+                               incoming().ownerUid == request.auth.uid &&
+                               incoming().riskLevel == 'R3_CRITICAL' &&
+                               incoming().policeEscalationEligible == true &&
+                               isExplicitSosOrigin(incoming().triggerOrigin) &&
+                               incoming().updatedAt is timestamp;
+      allow delete: if false;
+    }
+
+    match /dispatch_attempts/{attemptId} {
+      allow get, list: if isSignedIn() && existing().ownerUid == request.auth.uid;
+      allow create: if isSignedIn() &&
+                       isValidId(attemptId) &&
+                       incoming().attemptId == attemptId &&
+                       incoming().ownerUid == request.auth.uid &&
+                       incoming().channel is string && incoming().channel.size() <= 40 &&
+                       incoming().deliveryState is string && incoming().deliveryState.size() <= 40 &&
+                       incoming().createdAt is timestamp;
+      allow update, delete: if false;
+    }
+
+    match /delivery_receipts/{receiptId} {
+      allow get, list: if isSignedIn() && existing().ownerUid == request.auth.uid;
+      allow create: if isSignedIn() &&
+                       isValidId(receiptId) &&
+                       incoming().receiptId == receiptId &&
+                       incoming().ownerUid == request.auth.uid &&
+                       incoming().channel is string && incoming().channel.size() <= 40 &&
+                       incoming().state is string && incoming().state.size() <= 40 &&
+                       incoming().updatedAt is timestamp;
+      allow update, delete: if false;
+    }
+
+    // Token-Gated Responder Portal Dossier (unpredictable tokenId, R3_CRITICAL only)
+    match /dossier_access/{tokenId} {
+      allow get: if isValidId(tokenId) &&
+                    existing().tokenId == tokenId &&
+                    existing().revoked == false &&
+                    existing().riskLevel == 'R3_CRITICAL';
+      allow list: if isSignedIn() && existing().ownerUid == request.auth.uid;
+      allow create, update: if isSignedIn() &&
+                               isValidId(tokenId) &&
+                               incoming().tokenId == tokenId &&
+                               incoming().ownerUid == request.auth.uid &&
+                               incoming().riskLevel == 'R3_CRITICAL' &&
+                               incoming().revoked is bool &&
+                               incoming().expiresAtMillis is int &&
+                               incoming().incidentId is string && isValidId(incoming().incidentId);
+      allow delete: if isSignedIn() && existing().ownerUid == request.auth.uid;
+    }
+
+    // Six-Directional Hexagonal Rescue Requests
+    match /hex_rescue_requests/{requestId} {
+      allow get, list: if isSignedIn() && (
+        existing().lifecycleState in [
+          'REQUEST_CREATED',
+          'RESPONDERS_DISCOVERED',
+          'REQUEST_BROADCAST',
+          'RESPONDER_ACCEPTED',
+          'EN_ROUTE',
+          'ARRIVED'
+        ] ||
+        existing().victimUid == request.auth.uid ||
+        existing().acceptedResponderUid == request.auth.uid
+      );
+
+      allow create: if isSignedIn() &&
+                       isValidId(requestId) &&
+                       incoming().requestId == requestId &&
+                       incoming().victimUid == request.auth.uid &&
+                       incoming().lifecycleState in ['REQUEST_CREATED', 'RESPONDERS_DISCOVERED', 'REQUEST_BROADCAST'] &&
+                       incoming().latitude is number && incoming().latitude >= -90 && incoming().latitude <= 90 &&
+                       incoming().longitude is number && incoming().longitude >= -180 && incoming().longitude <= 180 &&
+                       incoming().updatedAt is timestamp;
+
+      allow update: if isSignedIn() && isValidId(requestId) && (
+        (
+          // Victim expanding radius or updating evidence/status
+          existing().victimUid == request.auth.uid &&
+          incoming().victimUid == existing().victimUid &&
+          incoming().requestId == existing().requestId &&
+          incoming().updatedAt is timestamp
+        ) || (
+          // Nearby citizen responder accepting and advancing pickup lifecycle
+          request.auth.uid != existing().victimUid &&
+          incoming().victimUid == existing().victimUid &&
+          incoming().requestId == existing().requestId &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'lifecycleState', 'acceptedResponderUid', 'acceptedResponderName',
+            'acceptedResponderPhone', 'acceptedResponderSelfieB64',
+            'acceptedResponderLat', 'acceptedResponderLng', 'updatedAt'
+          ]) &&
+          (
+            !('acceptedResponderPhone' in incoming()) ||
+            incoming().acceptedResponderPhone == null ||
+            (incoming().acceptedResponderPhone is string && incoming().acceptedResponderPhone.size() <= 30)
+          ) &&
+          (
+            !('acceptedResponderSelfieB64' in incoming()) ||
+            incoming().acceptedResponderSelfieB64 == null ||
+            (incoming().acceptedResponderSelfieB64 is string && incoming().acceptedResponderSelfieB64.size() <= 120000)
+          ) &&
+          (
+            !('acceptedResponderLat' in incoming()) ||
+            incoming().acceptedResponderLat == null ||
+            (incoming().acceptedResponderLat is number && incoming().acceptedResponderLat >= -90 && incoming().acceptedResponderLat <= 90)
+          ) &&
+          (
+            !('acceptedResponderLng' in incoming()) ||
+            incoming().acceptedResponderLng == null ||
+            (incoming().acceptedResponderLng is number && incoming().acceptedResponderLng >= -180 && incoming().acceptedResponderLng <= 180)
+          ) &&
+          (
+            (
+              existing().lifecycleState in ['REQUEST_CREATED', 'RESPONDERS_DISCOVERED', 'REQUEST_BROADCAST'] &&
+              incoming().lifecycleState == 'RESPONDER_ACCEPTED' &&
+              incoming().acceptedResponderUid == request.auth.uid
+            ) || (
+              existing().acceptedResponderUid == request.auth.uid &&
+              incoming().acceptedResponderUid == existing().acceptedResponderUid &&
+              incoming().lifecycleState in ['EN_ROUTE', 'ARRIVED', 'COMPLETED']
+            )
+          ) &&
+          incoming().updatedAt is timestamp
+        )
+      );
+
+      allow delete: if isSignedIn() && isValidId(requestId) && existing().victimUid == request.auth.uid;
+    }
+
+    // Zero-Quota-Waste Live Moving-Pin Family Radar (Single overwritten tiny doc per user)
+    match /live_radar/{ownerUid} {
+      allow get: if isSignedIn() && isValidId(ownerUid) && (
+        request.auth.uid == ownerUid ||
+        request.auth.uid in existing().authorizedUids ||
+        isVerifiedEmailGuardian(existing())
+      );
+
+      allow list: if isSignedIn() && (
+        existing().ownerUid == request.auth.uid ||
+        request.auth.uid in existing().authorizedUids ||
+        isVerifiedEmailGuardian(existing())
+      );
+
+      allow create, update: if isSignedIn() &&
+                               isValidId(ownerUid) &&
+                               request.auth.uid == ownerUid &&
+                               incoming().ownerUid == ownerUid &&
+                               incoming().ownerName is string && incoming().ownerName.size() <= 100 &&
+                               incoming().relationshipHint is string && incoming().relationshipHint.size() <= 40 &&
+                               incoming().lat is number && incoming().lat >= -90 && incoming().lat <= 90 &&
+                               incoming().lng is number && incoming().lng >= -180 && incoming().lng <= 180 &&
+                               incoming().bearing is number &&
+                               incoming().speed is number &&
+                               incoming().battery is int && incoming().battery >= 0 && incoming().battery <= 100 &&
+                               incoming().sharingActive is bool &&
+                               incoming().isEmergency is bool &&
+                               incoming().statusNote is string && incoming().statusNote.size() <= 240 &&
+                               incoming().authorizedUids is list && incoming().authorizedUids.size() <= 20 &&
+                               incoming().authorizedEmails is list && incoming().authorizedEmails.size() <= 20 &&
+                               incoming().updatedAt is timestamp;
+
+      allow delete: if isSignedIn() && isValidId(ownerUid) && request.auth.uid == ownerUid;
+    }
+
+    // Anonymized Nearby Support Presence (lets victims see nearby active helpers/citizens on 3D map)
+    match /nearby_presence/{ownerUid} {
+      allow get, list: if isSignedIn();
+
+      allow create, update: if isSignedIn() &&
+                               isValidId(ownerUid) &&
+                               request.auth.uid == ownerUid &&
+                               incoming().ownerUid == ownerUid &&
+                               incoming().displayName is string && incoming().displayName.size() <= 60 &&
+                               incoming().roleTag is string && incoming().roleTag.size() <= 40 &&
+                               incoming().isVerifiedResponder is bool &&
+                               incoming().isOnDuty is bool &&
+                               incoming().lat is number && incoming().lat >= -90 && incoming().lat <= 90 &&
+                               incoming().lng is number && incoming().lng >= -180 && incoming().lng <= 180 &&
+                               incoming().geohashPrefix is string && incoming().geohashPrefix.size() <= 8 &&
+                               incoming().updatedAt is timestamp;
+
+      allow delete: if isSignedIn() && isValidId(ownerUid) && request.auth.uid == ownerUid;
+    }
+
+    // Automated Chunked Audio / Photo / Video Evidence Vault (Zero manual interaction sharing)
+    match /evidence_vault/{chunkId} {
+      allow get: if isValidId(chunkId) && isSignedIn() && (
+        existing().ownerUid == request.auth.uid ||
+        request.auth.uid in existing().authorizedUids ||
+        isVerifiedEmailGuardian(existing())
+      );
+
+      allow list: if isSignedIn() && (
+        existing().ownerUid == request.auth.uid ||
+        request.auth.uid in existing().authorizedUids ||
+        isVerifiedEmailGuardian(existing())
+      );
+
+      allow create, update: if isSignedIn() &&
+                               isValidId(chunkId) &&
+                               incoming().chunkId == chunkId &&
+                               incoming().incidentId is string && isValidId(incoming().incidentId) &&
+                               incoming().ownerUid == request.auth.uid &&
+                               incoming().mediaKind in ['AUDIO', 'PHOTO_FRONT', 'PHOTO_REAR', 'VIDEO'] &&
+                               incoming().fileName is string && incoming().fileName.size() <= 128 &&
+                               incoming().mimeType is string && incoming().mimeType.size() <= 64 &&
+                               incoming().chunkIndex is int && incoming().chunkIndex >= 0 &&
+                               incoming().totalChunks is int && incoming().totalChunks >= 1 && incoming().totalChunks <= 18 &&
+                               incoming().sha256 is string && incoming().sha256.size() <= 128 &&
+                               incoming().dataBase64 is string && incoming().dataBase64.size() <= 260000 &&
+                               incoming().authorizedUids is list && incoming().authorizedUids.size() <= 15 &&
+                               incoming().authorizedEmails is list && incoming().authorizedEmails.size() <= 15 &&
+                               incoming().createdAt is timestamp;
+
+      allow delete: if isSignedIn() && isValidId(chunkId) && existing().ownerUid == request.auth.uid;
+    }
+  }
+}

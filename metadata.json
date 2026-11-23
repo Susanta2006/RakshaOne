@@ -1,0 +1,6 @@
+{
+  "name": "RakshaOne",
+  "description": "Personal Safety & Emergency Response Platform with rapid SOS activation, trusted contacts notification, live location tracking, trip monitoring, incident reporting, government dispatcher portal, and Suraksha AI assistant.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

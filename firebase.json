@@ -1,0 +1,32 @@
+{
+  "firestore": [
+    {
+      "database": "ai-studio-android-rakshaon-45087928-cfb8-48cb-a931-7b3f2946188e",
+      "rules": "firestore.rules"
+    }
+  ],
+  "hosting": {
+    "public": "public",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**",
+      "assets/**"
+    ],
+    "rewrites": [
+      {
+        "source": "/dispatch/**",
+        "destination": "/index.html"
+      }
+    ]
+  },
+  "emulators": {
+    "firestore": {
+      "host": "127.0.0.1",
+      "port": 8085
+    },
+    "ui": {
+      "enabled": false
+    }
+  }
+}
