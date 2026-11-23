@@ -198,11 +198,11 @@ class EmergencyEscalationOrchestrator(
                 incidentId = incidentId,
                 dossierToken = tokenId,
                 dossierUrl = webPortalUrl,
-                victimName = "Citizen",
+                victimName = dossier.victimName,
                 latitude = dossier.latitude,
                 longitude = dossier.longitude,
-                accuracyMeters = null,
-                batteryPercent = 100,
+                accuracyMeters = dossier.accuracyMeters,
+                batteryPercent = dossier.batteryPercent,
                 evidenceSummary = dossier.evidenceHashesSummary
             )
         } catch (_: Exception) {

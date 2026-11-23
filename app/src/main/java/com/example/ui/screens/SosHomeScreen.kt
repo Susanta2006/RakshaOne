@@ -5,7 +5,9 @@ import android.app.Activity
 import android.bluetooth.BluetoothAdapter
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.provider.Settings
+import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -16,6 +18,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -86,6 +89,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -112,7 +116,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -193,7 +200,9 @@ fun SosHomeScreen(
     val autoDispatchMediaOnCapture by viewModel.autoDispatchMediaOnCapture.collectAsState()
     val selectedWaContactIdx by viewModel.selectedWhatsAppContactIndex.collectAsState()
     val incomingHexAlert by viewModel.activeIncomingHexAlert.collectAsState()
+    val activeOutgoingHexAlert by viewModel.activeOutgoingHexAlert.collectAsState()
     val activeGuardianHighAlert by viewModel.activeGuardianHighAlert.collectAsState()
+    val activeGuardianResponderAlert by viewModel.activeGuardianResponderAlert.collectAsState()
     val latestPoliceDossier by viewModel.latestPoliceDossier.collectAsState()
     val goodCitizenProfile by viewModel.goodCitizenProfile.collectAsState()
     val currentRiskAssessment by viewModel.currentRiskAssessment.collectAsState()
@@ -204,6 +213,7 @@ fun SosHomeScreen(
     val isDecoyStealthActive by viewModel.isDecoyStealthActive.collectAsState()
     val isProtectorWalkActive by viewModel.isProtectorWalkActive.collectAsState()
     val isPocketGestureArmed by viewModel.isPocketGestureArmed.collectAsState()
+    val isVolumeDownSilentSosEnabled by viewModel.isVolumeDownSilentSosEnabled.collectAsState()
     val capturedAudioPaths by viewModel.capturedAudioPaths.collectAsState()
     val lastDetectedPlate by viewModel.lastDetectedPlate.collectAsState()
     val fakeCallState by viewModel.fakeCallState.collectAsState()
@@ -329,7 +339,9 @@ fun SosHomeScreen(
                 playingAudioIncidentId = playingAudioIncidentId,
                 onPlayAudio = { incidentId -> viewModel.playGuardianAudio(incidentId) },
                 onStopAudio = { viewModel.stopGuardianAudio() },
-                onWatchVideo = { incidentId -> viewModel.openGuardianVideo(incidentId) }
+                onWatchVideo = { incidentId -> viewModel.openGuardianVideo(incidentId) },
+                responderAlert = activeGuardianResponderAlert,
+                onTrackDispatchMap = { viewModel.setOperatorMode(true) }
             )
 
             // Incoming Hexagonal Rescue Help Request Alert (Uber/Rapido style + Anti-Predator Selfie Lock)
@@ -885,6 +897,134 @@ fun SosHomeScreen(
                                             }
                                         }
                                     }
+
+                                    // Live Uber-Style Responder & Hexagonal Dispatch Tracking for the Victim
+                                    activeOutgoingHexAlert?.takeIf { it.incidentId == incident.incidentId }?.let { outgoing ->
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        val hasResponder = !outgoing.acceptedResponderName.isNullOrBlank()
+                                        val respSelfie: ImageBitmap? = remember(outgoing.acceptedResponderSelfieB64) {
+                                            val b64 = outgoing.acceptedResponderSelfieB64
+                                            if (b64.isNullOrBlank()) null
+                                            else try {
+                                                val bytes = Base64.decode(b64, Base64.DEFAULT)
+                                                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                                            } catch (_: Exception) {
+                                                null
+                                            }
+                                        }
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = if (hasResponder) Color(0xFF1E1035) else PoliceBlue.copy(alpha = 0.14f),
+                                            border = BorderStroke(1.dp, if (hasResponder) Color(0xFF8B5CF6) else PoliceBlue),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .testTag("victim_responder_tracking_card")
+                                        ) {
+                                            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                if (hasResponder) {
+                                                    val rLat = outgoing.acceptedResponderLat
+                                                    val rLng = outgoing.acceptedResponderLng
+                                                    val distMeters = if (rLat != null && rLng != null && (rLat != 0.0 || rLng != 0.0) &&
+                                                        (incident.latitude != 0.0 || incident.longitude != 0.0)
+                                                    ) {
+                                                        com.example.util.HexagonalRescueManager.calculateDistanceMeters(
+                                                            incident.latitude,
+                                                            incident.longitude,
+                                                            rLat,
+                                                            rLng
+                                                        ).toInt()
+                                                    } else null
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                    ) {
+                                                        respSelfie?.let { bmp ->
+                                                            Image(
+                                                                bitmap = bmp,
+                                                                contentDescription = "Responder Selfie",
+                                                                contentScale = ContentScale.Crop,
+                                                                modifier = Modifier
+                                                                    .size(40.dp)
+                                                                    .clip(CircleShape)
+                                                            )
+                                                        }
+                                                        Column(modifier = Modifier.weight(1f)) {
+                                                            Text(
+                                                                text = "HELPER ${outgoing.lifecycleState.name} • ${outgoing.acceptedResponderName}",
+                                                                fontSize = 11.sp,
+                                                                fontWeight = FontWeight.Black,
+                                                                color = Color(0xFFA78BFA)
+                                                            )
+                                                            Text(
+                                                                text = buildString {
+                                                                    append(outgoing.acceptedResponderPhone ?: "Verified Citizen ID")
+                                                                    if (distMeters != null) {
+                                                                        append(" • ~${distMeters}m (~${(distMeters / 80).coerceAtLeast(1)}m walk)")
+                                                                    }
+                                                                },
+                                                                fontSize = 11.sp,
+                                                                color = Color.White,
+                                                                fontWeight = FontWeight.SemiBold
+                                                            )
+                                                        }
+                                                    }
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                    ) {
+                                                        if (!outgoing.acceptedResponderPhone.isNullOrBlank()) {
+                                                            OutlinedButton(
+                                                                onClick = { viewModel.dialNumber(outgoing.acceptedResponderPhone) },
+                                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                                                modifier = Modifier.weight(1f)
+                                                            ) {
+                                                                Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White)
+                                                                Spacer(modifier = Modifier.width(4.dp))
+                                                                Text("Call", fontSize = 10.sp, color = Color.White)
+                                                            }
+                                                        }
+                                                        if (rLat != null && rLng != null && (rLat != 0.0 || rLng != 0.0)) {
+                                                            OutlinedButton(
+                                                                onClick = { viewModel.openIncidentInMaps(rLat, rLng, "Responder ${outgoing.acceptedResponderName}") },
+                                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                                                modifier = Modifier.weight(1f)
+                                                            ) {
+                                                                Text("Helper GPS", fontSize = 10.sp, color = SafetyTeal)
+                                                            }
+                                                        }
+                                                        Button(
+                                                            onClick = { viewModel.setOperatorMode(true) },
+                                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8B5CF6)),
+                                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                                            modifier = Modifier.weight(1.1f)
+                                                        ) {
+                                                            Text("Uber Live Map", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                                        }
+                                                    }
+                                                } else {
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Text(
+                                                            text = "Hex Rescue Scanning Stage ${outgoing.expansionStage} (${outgoing.currentRadiusMeters.toInt()}m)",
+                                                            fontSize = 11.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = PoliceBlue,
+                                                            modifier = Modifier.weight(1f)
+                                                        )
+                                                        FilledTonalButton(
+                                                            onClick = { viewModel.setOperatorMode(true) },
+                                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                                        ) {
+                                                            Text("Live Map", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
 
@@ -997,7 +1137,7 @@ fun SosHomeScreen(
                                 ) {
                                     Icon(Icons.Default.Sms, contentDescription = null, modifier = Modifier.size(15.dp))
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    Text("SMS (Trusted)", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text("Pre-Fill SMS", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 }
                                 FilledTonalButton(
                                     onClick = { viewModel.emailAllEvidenceToGuardians() },
@@ -1250,40 +1390,87 @@ fun SosHomeScreen(
                 ),
                 border = if (isSilentMode) BorderStroke(1.dp, PoliceBlue.copy(alpha = 0.45f)) else null
             ) {
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                        .padding(horizontal = 14.dp, vertical = 10.dp)
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                        Icon(
-                            imageVector = if (isSilentMode) Icons.Default.NotificationsOff else Icons.Default.NotificationsActive,
-                            contentDescription = "Silent SOS Stealth Mode",
-                            tint = if (isSilentMode) PoliceBlue else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                text = if (isSilentMode) "Silent SOS Mode: ON (Stealth)" else "Silent SOS Mode: OFF",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                color = if (isSilentMode) PoliceBlue else MaterialTheme.colorScheme.onSurface
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            Icon(
+                                imageVector = if (isSilentMode) Icons.Default.NotificationsOff else Icons.Default.NotificationsActive,
+                                contentDescription = "Silent SOS Stealth Mode",
+                                tint = if (isSilentMode) PoliceBlue else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(22.dp)
                             )
-                            Text(
-                                text = "Silences siren & camera flash so distress alerts don't escalate threats",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = if (isSilentMode) "Silent SOS Mode: ON (Stealth)" else "Silent SOS Mode: OFF",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = if (isSilentMode) PoliceBlue else MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Silences siren, flash & voice alerts during SOS",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
+                        Switch(
+                            checked = isSilentMode,
+                            onCheckedChange = { viewModel.setSilentMode(it) },
+                            modifier = Modifier.testTag("silent_sos_switch")
+                        )
                     }
-                    Switch(
-                        checked = isSilentMode,
-                        onCheckedChange = { viewModel.setSilentMode(it) },
-                        modifier = Modifier.testTag("silent_sos_switch")
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 8.dp),
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
                     )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            Icon(
+                                imageVector = Icons.Default.Lock,
+                                contentDescription = "Lockscreen 3x Volume Down SOS",
+                                tint = if (isVolumeDownSilentSosEnabled) SafetyTeal else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = if (isVolumeDownSilentSosEnabled) {
+                                        "Locked 3x Vol-Down Stealth SOS: ARMED"
+                                    } else {
+                                        "Locked 3x Vol-Down Stealth SOS: OFF"
+                                    },
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = if (isVolumeDownSilentSosEnabled) SafetyTeal else MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Triggers Silent SOS ONLY when locked/screen off (ignores holds, 2 taps & gaps)",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Switch(
+                            checked = isVolumeDownSilentSosEnabled,
+                            onCheckedChange = { viewModel.setVolumeDownSilentSosEnabled(it) },
+                            modifier = Modifier.testTag("lockscreen_vol_down_sos_switch")
+                        )
+                    }
                 }
             }
 
@@ -1701,7 +1888,7 @@ fun SosHomeScreen(
                 )
                 SosToolCard(
                     title = if (isPocketGestureArmed) "Pocket SOS ARMED" else "Pocket SOS",
-                    subtitle = "4x Vol / Jack Unplug",
+                    subtitle = "4x Vol-Up / Headset Jack",
                     icon = Icons.Default.Hearing,
                     accentColor = WarningAmber,
                     isActive = isPocketGestureArmed,

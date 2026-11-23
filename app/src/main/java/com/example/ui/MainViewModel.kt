@@ -40,11 +40,13 @@ import com.example.data.repository.FirestoreProfileRepository
 import com.example.data.repository.SafetyRepository
 import com.example.data.repository.TripAnomalyState
 import com.example.risk.CitizenVerificationStatus
+import com.example.risk.HexRescueLifecycleState
 import com.example.risk.PoliceEscalationStatus
 import com.example.risk.ReceiptDeliveryState
 import com.example.risk.RiskAssessmentResult
 import com.example.risk.RiskLevel
 import com.example.risk.TriggerOrigin
+import com.example.service.LockscreenVolumeSosService
 import com.example.service.SosAlertService
 import com.example.service.SosSmsDispatchState
 import com.example.util.AiLearningStateSnapshot
@@ -58,9 +60,11 @@ import com.example.util.FakeCallState
 import com.example.util.FusedLocationWrapper
 import com.example.util.GuardianHighAlertNotifier
 import com.example.util.GuardianVoicePersona
+import com.example.util.HexagonalRescueManager
 import com.example.util.LanguageOption
 import com.example.util.LiveRadarPin
 import com.example.util.LocationState
+import com.example.util.VolumeDownTripleClickDetector
 import com.example.util.MLServiceManager
 import com.example.util.NearbySupportUser
 import com.example.util.PhoneNormalizer
@@ -86,6 +90,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
@@ -93,6 +98,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Locale
+import kotlin.math.roundToInt
 
 enum class SosCountdownState {
     IDLE,
@@ -156,6 +162,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val trustedContacts: StateFlow<List<TrustedContactEntity>> = repository.trustedContacts
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val guardianResponderAlertsByIncident: StateFlow<Map<String, HexRescueAlert>> = combine(
+        incomingGuardianAlerts,
+        allCloudHexAlerts
+    ) { guardianAlerts, hexAlerts ->
+        if (guardianAlerts.isEmpty() || hexAlerts.isEmpty()) {
+            emptyMap()
+        } else {
+            val byIncident = hexAlerts.associateBy { it.incidentId }
+            guardianAlerts.mapNotNull { dispatch ->
+                byIncident[dispatch.dispatchId]?.let { dispatch.dispatchId to it }
+            }.toMap()
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
+    val activeGuardianResponderAlert: StateFlow<HexRescueAlert?> = combine(
+        _activeGuardianHighAlert,
+        allCloudHexAlerts
+    ) { bannerAlert, hexAlerts ->
+        if (bannerAlert == null) null
+        else hexAlerts.firstOrNull { it.incidentId == bannerAlert.dispatchId }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
     val allIncidents: StateFlow<List<IncidentEntity>> = repository.allIncidents
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -207,6 +235,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val activeIncomingHexAlert: StateFlow<HexRescueAlert?> = repository.hexagonalRescueManager.activeIncomingAlert
     val activeOutgoingHexAlert: StateFlow<HexRescueAlert?> = repository.hexagonalRescueManager.activeOutgoingAlert
     val nearbyHexAlerts: StateFlow<List<HexRescueAlert>> = repository.hexagonalRescueManager.nearbyHexAlerts
+    val allCloudHexAlerts: StateFlow<List<HexRescueAlert>> = repository.hexagonalRescueManager.allCloudHexAlerts
     val latestPoliceDossier: StateFlow<PoliceDispatchDossier?> = repository.emergencyResponseDispatcher.latestPoliceDossier
 
     val currentRiskAssessment: StateFlow<RiskAssessmentResult> = repository.currentRiskAssessment
@@ -292,10 +321,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isPocketGestureArmed = MutableStateFlow(false)
     val isPocketGestureArmed: StateFlow<Boolean> = _isPocketGestureArmed.asStateFlow()
 
+    private val lockscreenPrefs = application.getSharedPreferences(
+        LockscreenVolumeSosService.PREFS_NAME,
+        Context.MODE_PRIVATE
+    )
+    private val _isVolumeDownSilentSosEnabled = MutableStateFlow(
+        lockscreenPrefs.getBoolean(LockscreenVolumeSosService.PREF_LOCKSCREEN_VOL_SOS_ENABLED, true)
+    )
+    val isVolumeDownSilentSosEnabled: StateFlow<Boolean> = _isVolumeDownSilentSosEnabled.asStateFlow()
+
     private val _lastDetectedPlate = MutableStateFlow<String?>(null)
     val lastDetectedPlate: StateFlow<String?> = _lastDetectedPlate.asStateFlow()
 
     private val volumePressTimestamps = mutableListOf<Long>()
+    private val volumeDownDetector = VolumeDownTripleClickDetector()
 
     // Anti-Snatch Shield & Device Admin Screen Auto-Lock StateFlows
     val isDeviceAdminActive: StateFlow<Boolean> = repository.deviceLockManager.isDeviceAdminActive
@@ -394,6 +433,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var countdownJob: Job? = null
 
     init {
+        viewModelScope.launch {
+            repository.latestActiveIncident.collect { active ->
+                if (active != null && _sosState.value == SosCountdownState.IDLE) {
+                    _sosState.value = SosCountdownState.ACTIVE
+                }
+            }
+        }
+
         viewModelScope.launch {
             repository.userProfile.collect { profile ->
                 if (profile != null) {
@@ -590,11 +637,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // Listen for autonomous offline connectivity alert events (silent SmsManager + WorkManager + BLE; zero UI popup)
+        // Listen for offline connectivity alert events (BLE Mesh + Black-Box + Play-safe Pre-filled SMS notification)
         viewModelScope.launch {
             repository.offlineConnectivityAlert.collect { alert ->
-                val smsNote = if (alert.directSmsSent) "Auto-SMS sent via SmsManager" else "WorkManager retry armed"
-                _statusEvents.tryEmit("Internet lost: Black-Box saved (Battery ${alert.batteryPercent}%) • $smsNote • BLE Mesh active")
+                _statusEvents.tryEmit(
+                    "Internet lost: Black-Box saved (Battery ${alert.batteryPercent}%) • Pre-filled SMS ready (tap notification) • BLE Mesh active"
+                )
             }
         }
 
@@ -603,7 +651,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             repository.bleEmergencyRelay.startScanningForNearbySos()
         }
 
-        // Surface real SosAlertService SMS dispatch updates and enqueue WorkManager retry silently (never popup interactive SMS composer)
+        // Surface real SosAlertService pre-filled SMS notification status cleanly
         viewModelScope.launch {
             SosAlertService.dispatchState.collect { state ->
                 if (state is SosSmsDispatchState.Completed) {
@@ -613,25 +661,103 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             _sosChannelStatus.value = current.copy(summary = state.summary)
                         }
                     }
-                    if (!state.directSmsSent && state.fallbackPhoneList.isNotBlank()) {
-                        com.example.service.CriticalSmsDispatchWorker.enqueue(
-                            context = getApplication(),
-                            incidentId = state.incidentId,
-                            riskLevel = "R3_CRITICAL",
-                            userNote = "Automatic Background SMS Retry",
-                            latitude = locationWrapper.currentLocation.value?.latitude,
-                            longitude = locationWrapper.currentLocation.value?.longitude,
-                            accuracyMeters = locationWrapper.currentLocation.value?.accuracy,
-                            fallbackReason = state.fallbackReason,
-                            phonesJoined = state.fallbackPhoneList,
-                            overrideBody = state.smsBody
+                }
+            }
+        }
+
+        // Stream accepted responder live details & coordinates into victim's dossier/portal + status banner
+        viewModelScope.launch {
+            var lastDossierSyncKey = ""
+            var lastAnnouncedResponderKey = ""
+            combine(
+                activeOutgoingHexAlert,
+                latestPoliceDossier,
+                realTimeLocation
+            ) { outgoing, dossier, loc ->
+                Triple(outgoing, dossier, loc)
+            }.collect { (outgoing, dossier, loc) ->
+                if (outgoing != null && !outgoing.acceptedResponderName.isNullOrBlank() &&
+                    (outgoing.lifecycleState == HexRescueLifecycleState.RESPONDER_ACCEPTED ||
+                        outgoing.lifecycleState == HexRescueLifecycleState.EN_ROUTE ||
+                        outgoing.lifecycleState == HexRescueLifecycleState.ARRIVED)
+                ) {
+                    val vLat = loc?.latitude ?: outgoing.victimLatitude
+                    val vLng = loc?.longitude ?: outgoing.victimLongitude
+                    val rLat = outgoing.acceptedResponderLat
+                    val rLng = outgoing.acceptedResponderLng
+                    val distMeters = if (rLat != null && rLng != null && (rLat != 0.0 || rLng != 0.0) && (vLat != 0.0 || vLng != 0.0)) {
+                        HexagonalRescueManager.calculateDistanceMeters(vLat, vLng, rLat, rLng)
+                    } else {
+                        outgoing.distanceMeters.takeIf { it > 0f }
+                    }
+                    val etaMinutes = distMeters?.let { (it / 80f).roundToInt().coerceAtLeast(1) }
+
+                    val announceKey = "${outgoing.alertId}_${outgoing.lifecycleState.name}_${outgoing.acceptedResponderName}"
+                    if (announceKey != lastAnnouncedResponderKey) {
+                        lastAnnouncedResponderKey = announceKey
+                        val distNote = distMeters?.let { " (~${it.roundToInt()}m, ~${etaMinutes ?: 1}m walk)" } ?: ""
+                        _statusEvents.tryEmit(
+                            "Responder ${outgoing.acceptedResponderName} (${outgoing.lifecycleState.name})$distNote"
+                        )
+                    }
+
+                    _activeLiveDossier.value?.let { openDossier ->
+                        if (openDossier.incidentId == outgoing.incidentId) {
+                            _activeLiveDossier.value = openDossier.copy(
+                                latitude = if (vLat != 0.0 || vLng != 0.0) vLat else openDossier.latitude,
+                                longitude = if (vLat != 0.0 || vLng != 0.0) vLng else openDossier.longitude,
+                                responderName = outgoing.acceptedResponderName,
+                                responderPhone = outgoing.acceptedResponderPhone,
+                                responderStatus = outgoing.lifecycleState.name,
+                                responderLat = rLat,
+                                responderLng = rLng,
+                                responderDistanceMeters = distMeters,
+                                responderEtaMinutes = etaMinutes
+                            )
+                        }
+                    }
+
+                    val targetToken = dossier?.takeIf { it.incidentId == outgoing.incidentId }?.dossierToken
+                        ?: _activeLiveDossier.value?.takeIf { it.incidentId == outgoing.incidentId }?.dossierToken
+                    if (!targetToken.isNullOrBlank()) {
+                        val syncKey = "$targetToken|${outgoing.lifecycleState.name}|${rLat?.let { String.format(Locale.US, "%.4f", it) }}|${rLng?.let { String.format(Locale.US, "%.4f", it) }}|${String.format(Locale.US, "%.4f", vLat)}|${String.format(Locale.US, "%.4f", vLng)}"
+                        if (syncKey != lastDossierSyncKey) {
+                            lastDossierSyncKey = syncKey
+                            repository.firestoreRiskRepository.updateDossierResponderTelemetry(
+                                tokenId = targetToken,
+                                victimLat = vLat,
+                                victimLng = vLng,
+                                responderName = outgoing.acceptedResponderName,
+                                responderPhone = outgoing.acceptedResponderPhone,
+                                responderStatus = outgoing.lifecycleState.name,
+                                responderLat = rLat,
+                                responderLng = rLng,
+                                responderDistanceMeters = distMeters,
+                                responderEtaMinutes = etaMinutes
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Notify Trusted Contacts in-app when a verified responder accepts or updates location on their friend's SOS
+        viewModelScope.launch {
+            var lastGuardianRespKey = ""
+            activeGuardianResponderAlert.collect { respAlert ->
+                if (respAlert != null && !respAlert.acceptedResponderName.isNullOrBlank()) {
+                    val key = "${respAlert.incidentId}_${respAlert.lifecycleState.name}_${respAlert.acceptedResponderName}"
+                    if (key != lastGuardianRespKey) {
+                        lastGuardianRespKey = key
+                        _statusEvents.tryEmit(
+                            "Verified Responder ${respAlert.acceptedResponderName} (${respAlert.lifecycleState.name}) tracking ${respAlert.victimName}"
                         )
                     }
                 }
             }
         }
 
-        // Automatically upload captured Dual-Camera videos/photos/audio directly to Evidence Vault with zero manual interaction & execute delayed Anti-Snatch lock
+        // Automatically upload captured Dual-Camera videos/photos/audio to Guardian Cloud Vault + auto-launch WhatsApp with GPS & ALL media once CameraX finishes
         viewModelScope.launch {
             repository.lastCameraCaptureCompleteIncidentId.collect { completedIncidentId ->
                 if (completedIncidentId != null) {
@@ -640,22 +766,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         autoLockFailsafeJob?.cancel()
                     }
 
+                    val synced = repository.syncEvidenceFilesToCloud(completedIncidentId)
+
                     if (completedIncidentId == currentAutoDispatchPendingIncidentId &&
                         _sosState.value == SosCountdownState.ACTIVE &&
                         _autoDispatchMediaOnCapture.value
                     ) {
                         currentAutoDispatchPendingIncidentId = null
-                        val synced = repository.syncEvidenceFilesToCloud(completedIncidentId)
                         _sosChannelStatus.value = _sosChannelStatus.value?.copy(
                             mediaDispatchSummary = if (synced) {
-                                "Audio (.m4a) + Front/Rear Photos + Video (.mp4) auto-synced to Cloud Evidence Vault & Trusted Guardians!"
+                                "Audio (.m4a) + Front/Rear Photos + Video (.mp4) auto-synced to Guardians! Launching WhatsApp..."
                             } else {
-                                "Evidence captured & encrypted locally — offline retry queued"
+                                "Evidence captured locally — launching WhatsApp with media bundle..."
                             }
                         )
                         _statusEvents.tryEmit(
-                            if (synced) "ALL SOS Audio, Video & Photos automatically sent to Trusted Guardians"
-                            else "SOS Audio, Video & Photos encrypted in local vault (auto-sync when online)"
+                            if (synced) "ALL SOS GPS, Audio, Video & Photos synced to Trusted Guardians — opening WhatsApp"
+                            else "SOS Audio, Video & Photos captured locally — opening WhatsApp"
+                        )
+                        dispatchSosEvidenceWithFallback(
+                            incidentId = completedIncidentId,
+                            preferWhatsApp = true
                         )
                     }
 
@@ -889,19 +1020,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         customNote: String = "Urgent SOS Activated",
         forceSilent: Boolean? = null,
         isSnatchTrigger: Boolean = false,
-        triggerOrigin: TriggerOrigin = TriggerOrigin.USER_EXPLICIT_INSTANT_SOS
+        triggerOrigin: TriggerOrigin = TriggerOrigin.USER_EXPLICIT_INSTANT_SOS,
+        deviceLocked: Boolean = false
     ) {
         countdownJob?.cancel()
         val useSilent = if (isSnatchTrigger) false else (forceSilent ?: _isSilentMode.value)
         _sosState.value = SosCountdownState.ACTIVE
         if (useSilent) {
+            _isSilentMode.value = true
             repository.sensorsManager.stopSiren()
             repository.sensorsManager.stopStrobe()
+            voiceGuardianManager.stopSpeaking()
+            repository.hapticManager.vibrateSosButtonTouch()
         } else {
             repository.sensorsManager.startSiren()
             repository.sensorsManager.startStrobe()
+            repository.hapticManager.vibrateEmergencySosTriggered()
         }
-        repository.hapticManager.vibrateEmergencySosTriggered()
 
         viewModelScope.launch {
             val liveLocation = locationWrapper.getImmediateLocation(timeoutMs = 3000L)
@@ -917,7 +1052,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 userComment = finalNote,
                 resolvedLocation = liveLocation,
                 isSnatchTrigger = isSnatchTrigger,
-                triggerOrigin = triggerOrigin
+                triggerOrigin = triggerOrigin,
+                silentStealth = useSilent,
+                deviceLocked = deviceLocked
             )
             val incident = result.incident
             currentAutoDispatchPendingIncidentId = incident.incidentId
@@ -992,6 +1129,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val camText = if (repository.cameraVideoRecorder.hasCameraPermission()) " • Dual Cam" else ""
             val cloudText = if (result.cloudGuardianDispatched) " • Guardians Notified" else ""
             _statusEvents.tryEmit("SOS Active ($modeText) [$gpsText$audioText$camText$cloudText]")
+
+            // If Camera permission is not granted, auto-launch WhatsApp once audio recording finishes (or immediately with GPS)
+            if (!repository.cameraVideoRecorder.hasCameraPermission() && _autoDispatchMediaOnCapture.value) {
+                viewModelScope.launch {
+                    delay(if (result.audioRecordingStarted) 12_500L else 1_500L)
+                    if (_sosState.value == SosCountdownState.ACTIVE &&
+                        currentAutoDispatchPendingIncidentId == incident.incidentId
+                    ) {
+                        currentAutoDispatchPendingIncidentId = null
+                        repository.syncEvidenceFilesToCloud(incident.incidentId)
+                        dispatchSosEvidenceWithFallback(
+                            incidentId = incident.incidentId,
+                            preferWhatsApp = true
+                        )
+                    }
+                }
+            }
         }
     }
 
@@ -2360,15 +2514,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val updatedLat = freshLoc?.latitude ?: currentDossier.latitude
             val updatedLng = freshLoc?.longitude ?: currentDossier.longitude
             val updatedAccuracy = freshLoc?.accuracy ?: currentDossier.accuracyMeters
+            val outgoing = activeOutgoingHexAlert.value?.takeIf { it.incidentId == currentDossier.incidentId }
+            val rLat = outgoing?.acceptedResponderLat ?: currentDossier.responderLat
+            val rLng = outgoing?.acceptedResponderLng ?: currentDossier.responderLng
+            val rDist = if (rLat != null && rLng != null && (rLat != 0.0 || rLng != 0.0) && (updatedLat != 0.0 || updatedLng != 0.0)) {
+                HexagonalRescueManager.calculateDistanceMeters(updatedLat, updatedLng, rLat, rLng)
+            } else {
+                outgoing?.distanceMeters?.takeIf { it > 0f } ?: currentDossier.responderDistanceMeters
+            }
+            val rEta = rDist?.let { (it / 80f).roundToInt().coerceAtLeast(1) } ?: currentDossier.responderEtaMinutes
 
-            _activeLiveDossier.value = currentDossier.copy(
+            val refreshed = currentDossier.copy(
                 latitude = updatedLat,
                 longitude = updatedLng,
                 accuracyMeters = updatedAccuracy,
                 medicalSummary = medicalSummary,
-                timestamp = System.currentTimeMillis()
+                timestamp = System.currentTimeMillis(),
+                responderName = outgoing?.acceptedResponderName ?: currentDossier.responderName,
+                responderPhone = outgoing?.acceptedResponderPhone ?: currentDossier.responderPhone,
+                responderStatus = outgoing?.lifecycleState?.name ?: currentDossier.responderStatus,
+                responderLat = rLat,
+                responderLng = rLng,
+                responderDistanceMeters = rDist,
+                responderEtaMinutes = rEta
             )
-            _statusEvents.tryEmit("Dossier telemetry updated with fresh GPS & medical records.")
+            _activeLiveDossier.value = refreshed
+            if (currentDossier.dossierToken.isNotBlank()) {
+                repository.firestoreRiskRepository.updateDossierResponderTelemetry(
+                    tokenId = currentDossier.dossierToken,
+                    victimLat = updatedLat,
+                    victimLng = updatedLng,
+                    responderName = refreshed.responderName,
+                    responderPhone = refreshed.responderPhone,
+                    responderStatus = refreshed.responderStatus,
+                    responderLat = refreshed.responderLat,
+                    responderLng = refreshed.responderLng,
+                    responderDistanceMeters = refreshed.responderDistanceMeters,
+                    responderEtaMinutes = refreshed.responderEtaMinutes
+                )
+            }
+            _statusEvents.tryEmit("Dossier telemetry updated with fresh GPS, responder & medical records.")
         }
     }
 
@@ -2395,15 +2580,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val updatedLat = freshLoc?.latitude ?: currentDossier.latitude
                 val updatedLng = freshLoc?.longitude ?: currentDossier.longitude
                 val updatedAccuracy = freshLoc?.accuracy ?: currentDossier.accuracyMeters
+                val outgoing = activeOutgoingHexAlert.value?.takeIf { it.incidentId == incidentId }
+                val rLat = outgoing?.acceptedResponderLat ?: currentDossier.responderLat
+                val rLng = outgoing?.acceptedResponderLng ?: currentDossier.responderLng
+                val rDist = if (rLat != null && rLng != null && (rLat != 0.0 || rLng != 0.0) && (updatedLat != 0.0 || updatedLng != 0.0)) {
+                    HexagonalRescueManager.calculateDistanceMeters(updatedLat, updatedLng, rLat, rLng)
+                } else {
+                    outgoing?.distanceMeters?.takeIf { it > 0f } ?: currentDossier.responderDistanceMeters
+                }
+                val rEta = rDist?.let { (it / 80f).roundToInt().coerceAtLeast(1) } ?: currentDossier.responderEtaMinutes
 
                 val updatedDossier = currentDossier.copy(
                     latitude = updatedLat,
                     longitude = updatedLng,
                     accuracyMeters = updatedAccuracy,
                     medicalSummary = medicalSummary,
-                    timestamp = System.currentTimeMillis()
+                    timestamp = System.currentTimeMillis(),
+                    responderName = outgoing?.acceptedResponderName ?: currentDossier.responderName,
+                    responderPhone = outgoing?.acceptedResponderPhone ?: currentDossier.responderPhone,
+                    responderStatus = outgoing?.lifecycleState?.name ?: currentDossier.responderStatus,
+                    responderLat = rLat,
+                    responderLng = rLng,
+                    responderDistanceMeters = rDist,
+                    responderEtaMinutes = rEta
                 )
                 _activeLiveDossier.value = updatedDossier
+                if (currentDossier.dossierToken.isNotBlank()) {
+                    repository.firestoreRiskRepository.updateDossierResponderTelemetry(
+                        tokenId = currentDossier.dossierToken,
+                        victimLat = updatedLat,
+                        victimLng = updatedLng,
+                        responderName = updatedDossier.responderName,
+                        responderPhone = updatedDossier.responderPhone,
+                        responderStatus = updatedDossier.responderStatus,
+                        responderLat = updatedDossier.responderLat,
+                        responderLng = updatedDossier.responderLng,
+                        responderDistanceMeters = updatedDossier.responderDistanceMeters,
+                        responderEtaMinutes = updatedDossier.responderEtaMinutes
+                    )
+                }
             }
         }
     }
@@ -2821,26 +3036,121 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun togglePocketGestureArmed(enabled: Boolean) {
         _isPocketGestureArmed.value = enabled
         _statusEvents.tryEmit(
-            if (enabled) "Pocket SOS Armed — 4x Volume Press OR Headset Unplug triggers SOS"
-            else "Pocket Hardware Micro-Gesture disarmed"
+            if (enabled) "Pocket SOS Armed — 4x Vol-Up OR Headset Unplug triggers SOS (Lockscreen 3x Vol-Down stays active)"
+            else "Pocket Headset/Vol-Up gesture disarmed (Lockscreen 3x Vol-Down stays active)"
         )
     }
 
-    fun registerVolumeButtonPress() {
-        if (!_isPocketGestureArmed.value) return
-        val now = System.currentTimeMillis()
-        volumePressTimestamps.removeAll { now - it > 2_500L }
-        volumePressTimestamps.add(now)
-        if (volumePressTimestamps.size >= 4) {
-            volumePressTimestamps.clear()
-            triggerPocketGestureSos("4x Volume Micro-Gesture SOS")
+    fun syncLockscreenVolumeSosService() {
+        if (_isVolumeDownSilentSosEnabled.value) {
+            LockscreenVolumeSosService.start(getApplication())
+        } else {
+            LockscreenVolumeSosService.stop(getApplication())
         }
     }
 
-    fun triggerPocketGestureSos(reason: String = "Pocket Hardware Micro-Gesture SOS") {
-        if (_sosState.value == SosCountdownState.IDLE) {
+    fun setVolumeDownSilentSosEnabled(enabled: Boolean) {
+        _isVolumeDownSilentSosEnabled.value = enabled
+        lockscreenPrefs.edit()
+            .putBoolean(LockscreenVolumeSosService.PREF_LOCKSCREEN_VOL_SOS_ENABLED, enabled)
+            .apply()
+        volumeDownDetector.reset()
+        syncLockscreenVolumeSosService()
+        _statusEvents.tryEmit(
+            if (enabled) "Lockscreen 3x Volume Down -> Silent SOS ARMED (only when locked or screen off)"
+            else "Lockscreen 3x Volume Down shortcut paused"
+        )
+    }
+
+    fun registerVolumeDownPress(
+        nowMillis: Long = System.currentTimeMillis(),
+        isRepeat: Boolean = false,
+        overrideLockedOrScreenOff: Boolean? = null
+    ): Boolean {
+        if (!_isVolumeDownSilentSosEnabled.value) {
+            volumeDownDetector.reset()
+            return false
+        }
+        val lockedOrOff = overrideLockedOrScreenOff
+            ?: VolumeDownTripleClickDetector.isDeviceLockedOrScreenOff(getApplication())
+        val triggered = volumeDownDetector.onVolumeDownEvent(
+            nowMillis = nowMillis,
+            isPhoneLockedOrScreenOff = lockedOrOff,
+            isRepeat = isRepeat
+        )
+        if (triggered) {
+            triggerSilentVolumeDownSos(
+                reason = "3x Volume Down Stealth SOS (Locked/Screen Off — Silent Mode)",
+                deviceLocked = lockedOrOff
+            )
+            return true
+        }
+        return false
+    }
+
+    fun registerVolumeButtonPress(nowMillis: Long = System.currentTimeMillis()) {
+        if (!_isPocketGestureArmed.value) return
+        volumePressTimestamps.removeAll { nowMillis - it > 2_500L }
+        volumePressTimestamps.add(nowMillis)
+        if (volumePressTimestamps.size >= 4) {
+            volumePressTimestamps.clear()
+            triggerPocketGestureSos("4x Volume Micro-Gesture SOS (Silent)", silentStealth = true)
+        }
+    }
+
+    fun triggerSilentVolumeDownSos(
+        reason: String = "3x Volume Down Stealth SOS (Locked/Screen Off — Silent Mode)",
+        deviceLocked: Boolean = true
+    ) {
+        // Immediately silence siren, strobe flashlight, and spoken TTS while keeping stealth activities active
+        _isSilentMode.value = true
+        repository.sensorsManager.stopSiren()
+        repository.sensorsManager.stopStrobe()
+        voiceGuardianManager.stopSpeaking()
+        _isLiveLocationSharingEnabled.value = true
+        if (locationWrapper.hasFineLocationPermission()) {
+            startLocationTracking()
+        }
+
+        when (_sosState.value) {
+            SosCountdownState.IDLE, SosCountdownState.COUNTDOWN -> {
+                viewModelScope.launch {
+                    repository.setSilentSosMode(true)
+                }
+                triggerImmediateSos(
+                    customNote = reason,
+                    forceSilent = true,
+                    triggerOrigin = TriggerOrigin.USER_EXPLICIT_INSTANT_SOS,
+                    deviceLocked = deviceLocked
+                )
+                _statusEvents.tryEmit("3x Volume Down (Locked): Silent Mode SOS + Stealth Cam/Audio/GPS + Guardian Alerts triggered")
+            }
+            SosCountdownState.ACTIVE -> {
+                // Additional stealth pulse while SOS is already active: snap stealth evidence, update radar, and re-sync Guardians
+                viewModelScope.launch {
+                    val activeId = latestActiveIncident.value?.incidentId
+                    publishLiveRadarTick(isForegroundDispatch = _isDispatchTabVisible.value, forceImmediate = true)
+                    if (repository.cameraVideoRecorder.hasCameraPermission()) {
+                        captureEvidenceSnapshotNow()
+                    }
+                    if (!activeId.isNullOrBlank()) {
+                        repository.syncEvidenceFilesToCloud(activeId)
+                    }
+                    repository.hapticManager.vibrateSosButtonTouch()
+                    _statusEvents.tryEmit("3x Volume Down: Silent stealth pulse — GPS, snapshot & Guardians refreshed")
+                }
+            }
+        }
+    }
+
+    fun triggerPocketGestureSos(
+        reason: String = "Pocket Hardware Micro-Gesture SOS",
+        silentStealth: Boolean = true
+    ) {
+        if (_sosState.value != SosCountdownState.ACTIVE) {
             triggerImmediateSos(
                 customNote = reason,
+                forceSilent = silentStealth || _isSilentMode.value,
                 triggerOrigin = TriggerOrigin.USER_EXPLICIT_INSTANT_SOS
             )
         }

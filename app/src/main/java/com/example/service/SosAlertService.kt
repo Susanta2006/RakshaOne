@@ -325,53 +325,14 @@ class SosAlertService : Service() {
         }
 
         val phonesJoined = contacts.joinToString(";") { it.phone.trim() }
-        val hasSmsPermission = ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.SEND_SMS
-        ) == PackageManager.PERMISSION_GRANTED
-        val authorizedAutoSms = CriticalSmsDispatchWorker.isAuthorizedCriticalContext(riskLevel, fallbackReason)
 
-        var directSentCount = 0
-        val failedPhones = mutableListOf<String>()
-
-        if (authorizedAutoSms && hasSmsPermission) {
-            for (contact in contacts) {
-                val sent = dispatchCarrierSmsDirect(contact.phone, smsBody)
-                if (sent) {
-                    directSentCount++
-                } else {
-                    failedPhones.add(contact.phone.trim())
-                }
-            }
-        }
-
-        // Schedule resilient WorkManager retry for any failed recipients or connectivity drops
-        if (authorizedAutoSms && (!hasSmsPermission || failedPhones.isNotEmpty())) {
-            val retryPhones = if (failedPhones.isNotEmpty()) failedPhones.joinToString(";") else phonesJoined
-            CriticalSmsDispatchWorker.enqueue(
-                context = applicationContext,
-                incidentId = incidentId,
-                riskLevel = riskLevel,
-                userNote = userNote,
-                latitude = liveLocation?.latitude,
-                longitude = liveLocation?.longitude,
-                accuracyMeters = liveLocation?.accuracy,
-                batteryPercent = batteryPercent,
-                fallbackReason = fallbackReason,
-                phonesJoined = retryPhones,
-                overrideBody = smsBody
-            )
-        }
-
-        // Post actionable notification when direct SMS didn't cover every contact
-        if (directSentCount < contacts.size) {
-            postActionableSmsNotification(
-                incidentId = incidentId,
-                phonesJoined = phonesJoined,
-                smsBody = smsBody,
-                contactCount = contacts.size
-            )
-        }
+        // Play-Protect compliant: prepare pre-filled SMS composer notification (user taps Send in Messages app)
+        postActionableSmsNotification(
+            incidentId = incidentId,
+            phonesJoined = phonesJoined,
+            smsBody = smsBody,
+            contactCount = contacts.size
+        )
 
         val coordsSummary = if (liveLocation != null) {
             "(${String.format(Locale.US, "%.4f", liveLocation.latitude)}, ${String.format(Locale.US, "%.4f", liveLocation.longitude)})"
@@ -379,62 +340,31 @@ class SosAlertService : Service() {
             "GPS pending"
         }
 
-        val directSmsSent = directSentCount > 0
-        val summaryText = when {
-            directSmsSent ->
-                "Autonomous SmsManager sent $directSentCount/${contacts.size} SMS ($coordsSummary) without manual tap"
-            !hasSmsPermission ->
-                "SEND_SMS permission not granted — SMS composer backup ready for ${contacts.size} contact(s)"
-            else ->
-                "Carrier SMS queued via WorkManager retry ($coordsSummary) for ${contacts.size} contact(s)"
-        }
+        val summaryText = "Pre-filled SOS SMS ready for ${contacts.size} contact(s) ($coordsSummary) — tap Send SMS to confirm"
         recordServiceEvent(
             incidentId = incidentId,
-            actor = if (directSmsSent) "SosAlertService (SmsManager Auto)" else "SosAlertService (Queued/Backup)",
+            actor = "SosAlertService (Pre-Filled SMS)",
             note = summaryText
         )
         recordServiceAudit(
             incidentId = incidentId,
             actor = userName,
-            action = if (directSmsSent) "SOS_SMS_AUTO_SENT" else "SOS_SMS_QUEUED_BACKUP",
+            action = "SOS_PREFILLED_SMS_READY",
             details = summaryText
         )
 
         _dispatchState.value = SosSmsDispatchState.Completed(
             incidentId = incidentId,
-            sentCount = if (directSmsSent) directSentCount else contacts.size,
+            sentCount = contacts.size,
             totalContacts = contacts.size,
             hasRealGps = hasRealGps,
-            permissionMissing = !hasSmsPermission,
+            permissionMissing = false,
             summary = summaryText,
             smsBody = smsBody,
-            fallbackPhoneList = if (failedPhones.isNotEmpty() && !directSmsSent) failedPhones.joinToString(";") else phonesJoined,
+            fallbackPhoneList = phonesJoined,
             fallbackReason = fallbackReason,
-            directSmsSent = directSmsSent
+            directSmsSent = false
         )
-    }
-
-    private fun dispatchCarrierSmsDirect(phoneNumber: String, messageText: String): Boolean {
-        return try {
-            val cleaned = phoneNumber.replace(Regex("[^+\\d]"), "")
-            if (cleaned.isBlank()) return false
-            val smsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                getSystemService(android.telephony.SmsManager::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                android.telephony.SmsManager.getDefault()
-            } ?: return false
-            val parts = smsManager.divideMessage(messageText)
-            if (parts.size > 1) {
-                smsManager.sendMultipartTextMessage(cleaned, null, parts, null, null)
-            } else {
-                smsManager.sendTextMessage(cleaned, null, messageText, null, null)
-            }
-            true
-        } catch (e: Exception) {
-            Log.w(TAG, "Direct SmsManager send failed: ${e.message}")
-            false
-        }
     }
 
     private fun postActionableSmsNotification(

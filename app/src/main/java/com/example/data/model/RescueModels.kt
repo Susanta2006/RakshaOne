@@ -101,6 +101,13 @@ data class PoliceDispatchDossier(
     val policeStatus: PoliceEscalationStatus = PoliceEscalationStatus.ELIGIBLE,
     val deliveryState: ReceiptDeliveryState = ReceiptDeliveryState.PENDING,
     val isTransmitted: Boolean = false,
-    val dispatchChannel: String = "112_INTENT_DIALER_SMS_EMAIL"
+    val dispatchChannel: String = "112_INTENT_DIALER_SMS_EMAIL",
+    val responderName: String? = null,
+    val responderPhone: String? = null,
+    val responderStatus: String? = null,
+    val responderLat: Double? = null,
+    val responderLng: Double? = null,
+    val responderDistanceMeters: Float? = null,
+    val responderEtaMinutes: Int? = null
 )
 

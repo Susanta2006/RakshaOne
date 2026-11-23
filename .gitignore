@@ -18,6 +18,8 @@ local.properties
 debug.keystore
 my-upload-key.jks
 *.jks
+*.jks.base64
+release-personal.jks*
 *.apk
 *.aab
 .build-outputs/

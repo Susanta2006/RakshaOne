@@ -87,8 +87,8 @@ class RakshaFirebaseMessagingService : FirebaseMessagingService() {
                         append("Official 112 Police Dossier & Live Portal Token:\n$dossierUrl")
                     }
 
-                    // 1. Send via carrier SMS / SmsManager to trusted contacts
-                    for (phone in phones) {
+                    // 1. Prepare single pre-filled SMS composer notification for manual Send in Messages app (Play Protect compliant)
+                    if (phones.isNotEmpty()) {
                         runCatching {
                             CriticalSmsDispatchWorker.enqueue(
                                 context = appContext,
@@ -100,38 +100,10 @@ class RakshaFirebaseMessagingService : FirebaseMessagingService() {
                                 accuracyMeters = accuracyMeters,
                                 batteryPercent = batteryPercent,
                                 fallbackReason = "DOSSIER_TOKEN_BROADCAST",
-                                phonesJoined = phone,
+                                phonesJoined = phones.joinToString(";"),
                                 overrideBody = fullMessage
                             )
                         }
-                    }
-
-                    // 2. Publish emergency dispatch to Firestore so installed Guardians see live dossier token & evidence instantly
-                    val uid = Firebase.auth.currentUser?.uid
-                    if (!uid.isNullOrBlank()) {
-                        val firestore = FirebaseFirestore.getInstance(
-                            appContext.getString(R.string.firestore_database_id)
-                        )
-                        val dispatchPayload = mapOf(
-                            "incidentId" to incidentId,
-                            "senderUid" to uid,
-                            "victimName" to victimName,
-                            "alertType" to "R3_DOSSIER_BROADCAST",
-                            "status" to "ACTIVE",
-                            "latitude" to (latitude ?: 0.0),
-                            "longitude" to (longitude ?: 0.0),
-                            "accuracyMeters" to (accuracyMeters ?: 0f),
-                            "batteryPercent" to batteryPercent,
-                            "dossierToken" to dossierToken,
-                            "dossierUrl" to dossierUrl,
-                            "evidenceSummary" to evidenceSummary,
-                            "mapsUrl" to mapLink,
-                            "createdAt" to com.google.firebase.Timestamp.now()
-                        )
-                        firestore.collection("emergency_dispatches")
-                            .document("DOSSIER_$incidentId")
-                            .set(dispatchPayload)
-                            .await()
                     }
 
                     db.auditLogDao().insertLog(
@@ -140,7 +112,7 @@ class RakshaFirebaseMessagingService : FirebaseMessagingService() {
                             role = "SYSTEM",
                             action = "DOSSIER_TOKEN_BROADCASTED",
                             targetId = incidentId,
-                            details = "Broadcasted dossier token to ${phones.size} trusted phone(s) & Firestore emergency_dispatches. URL: $dossierUrl"
+                            details = "Prepared pre-filled SMS draft for ${phones.size} trusted phone(s) & synced tokenized dossier $dossierUrl"
                         )
                     )
                 } catch (e: Exception) {

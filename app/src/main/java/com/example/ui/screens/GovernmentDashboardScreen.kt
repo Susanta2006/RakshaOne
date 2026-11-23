@@ -120,8 +120,10 @@ fun GovernmentDashboardScreen(
     val auditLogs by viewModel.auditLogs.collectAsState()
     val realTimeLocation by viewModel.realTimeLocation.collectAsState()
     val nearbyHexAlerts by viewModel.nearbyHexAlerts.collectAsState()
+    val allCloudHexAlerts by viewModel.allCloudHexAlerts.collectAsState()
     val activeIncomingHexAlert by viewModel.activeIncomingHexAlert.collectAsState()
     val activeOutgoingHexAlert by viewModel.activeOutgoingHexAlert.collectAsState()
+    val activeGuardianHighAlert by viewModel.activeGuardianHighAlert.collectAsState()
     val bleDiscoveries by viewModel.bleDiscoveries.collectAsState()
     val bleRelayStatus by viewModel.bleRelayStatus.collectAsState()
     val latestPoliceDossier by viewModel.latestPoliceDossier.collectAsState()
@@ -571,6 +573,28 @@ fun GovernmentDashboardScreen(
                             }
                         }
 
+                        val guardianLinkedHexAlert = activeGuardianHighAlert?.let { guardianAlert ->
+                            allCloudHexAlerts.firstOrNull { hex ->
+                                hex.incidentId == guardianAlert.dispatchId &&
+                                    combinedAlerts.none { it.alertId == hex.alertId } &&
+                                    activeOutgoingHexAlert?.alertId != hex.alertId
+                            }
+                        }
+                        guardianLinkedHexAlert?.let { friendHex ->
+                            item {
+                                DispatchHexAlertCard(
+                                    alert = friendHex,
+                                    isOutgoingOwner = true,
+                                    onAccept = {},
+                                    onMarkEnRoute = {},
+                                    onMarkArrived = {},
+                                    onComplete = {},
+                                    onNavigate = { lat, lng, label -> viewModel.openIncidentInMaps(lat, lng, label) },
+                                    onExportZeroFir = { viewModel.exportAndShareZeroFirTimeline(friendHex.incidentId) }
+                                )
+                            }
+                        }
+
                         if (combinedAlerts.isEmpty() && bleDiscoveries.isEmpty()) {
                             item {
                                 Card(
@@ -661,7 +685,10 @@ fun GovernmentDashboardScreen(
                         onToggleLiveSharing = { viewModel.setLiveLocationSharing(it) },
                         onDismissDisconnectAlert = { viewModel.clearDisconnectAlert() },
                         onOpenExternalMap = { lat, lng, label -> viewModel.openIncidentInMaps(lat, lng, label) },
-                        onDialEmergency = { phone -> viewModel.dialNumber(phone) }
+                        onDialEmergency = { phone -> viewModel.dialNumber(phone) },
+                        activeOutgoingHexAlert = activeOutgoingHexAlert,
+                        allCloudHexAlerts = allCloudHexAlerts,
+                        activeGuardianAlert = activeGuardianHighAlert
                     )
                 }
 

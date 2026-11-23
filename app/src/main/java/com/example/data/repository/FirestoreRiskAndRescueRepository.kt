@@ -372,6 +372,51 @@ class FirestoreRiskAndRescueRepository(private val db: FirebaseFirestore) {
         }
     }
 
+    suspend fun updateDossierResponderTelemetry(
+        tokenId: String,
+        victimLat: Double,
+        victimLng: Double,
+        responderName: String?,
+        responderPhone: String?,
+        responderStatus: String?,
+        responderLat: Double?,
+        responderLng: Double?,
+        responderDistanceMeters: Float?,
+        responderEtaMinutes: Int?
+    ): Result<Unit> {
+        val uid = currentUidOrNull() ?: return Result.failure(IllegalStateException("Not signed in"))
+        val cleanTok = tokenId.replace(Regex("[^a-zA-Z0-9_\\-]"), "_").take(128)
+        if (cleanTok.isBlank()) return Result.failure(IllegalArgumentException("Blank dossier token"))
+        return try {
+            val updates = hashMapOf<String, Any>(
+                "ownerUid" to uid,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            if (victimLat != 0.0 || victimLng != 0.0) {
+                updates["latitude"] = victimLat.coerceIn(-90.0, 90.0)
+                updates["longitude"] = victimLng.coerceIn(-180.0, 180.0)
+                updates["mapsUrl"] = "https://maps.google.com/?q=$victimLat,$victimLng"
+            }
+            responderName?.takeIf { it.isNotBlank() }?.let { updates["responderName"] = it.take(100) }
+            responderPhone?.takeIf { it.isNotBlank() }?.let { updates["responderPhone"] = it.take(30) }
+            responderStatus?.takeIf { it.isNotBlank() }?.let { updates["responderStatus"] = it.take(40) }
+            if (responderLat != null && responderLng != null && (responderLat != 0.0 || responderLng != 0.0)) {
+                updates["responderLat"] = responderLat.coerceIn(-90.0, 90.0)
+                updates["responderLng"] = responderLng.coerceIn(-180.0, 180.0)
+                updates["responderMapsUrl"] = "https://maps.google.com/?q=$responderLat,$responderLng"
+            }
+            responderDistanceMeters?.let { updates["responderDistanceMeters"] = it.toDouble() }
+            responderEtaMinutes?.let { updates["responderEtaMinutes"] = it }
+            db.collection("dossier_access").document(cleanTok).update(updates).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("FirestoreRiskRepo", "Unable to update dossier responder telemetry: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
     suspend fun recordDispatchAttemptAndReceipt(
         incidentId: String,
         channel: String,
@@ -638,7 +683,14 @@ class FirestoreRiskAndRescueRepository(private val db: FirebaseFirestore) {
                 policeStatus = polStatus,
                 deliveryState = ReceiptDeliveryState.PENDING,
                 isTransmitted = false,
-                dispatchChannel = "112_INTENT_DIALER_SMS"
+                dispatchChannel = "112_INTENT_DIALER_SMS",
+                responderName = snap.getString("responderName"),
+                responderPhone = snap.getString("responderPhone"),
+                responderStatus = snap.getString("responderStatus"),
+                responderLat = snap.getDouble("responderLat"),
+                responderLng = snap.getDouble("responderLng"),
+                responderDistanceMeters = snap.getDouble("responderDistanceMeters")?.toFloat(),
+                responderEtaMinutes = snap.getLong("responderEtaMinutes")?.toInt()
             )
         } catch (_: Exception) {
             null

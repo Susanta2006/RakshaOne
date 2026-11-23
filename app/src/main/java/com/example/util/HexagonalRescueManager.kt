@@ -60,9 +60,13 @@ class HexagonalRescueManager(
     private val _nearbyHexAlerts = MutableStateFlow<List<HexRescueAlert>>(emptyList())
     val nearbyHexAlerts: StateFlow<List<HexRescueAlert>> = _nearbyHexAlerts.asStateFlow()
 
+    private val _allCloudHexAlerts = MutableStateFlow<List<HexRescueAlert>>(emptyList())
+    val allCloudHexAlerts: StateFlow<List<HexRescueAlert>> = _allCloudHexAlerts.asStateFlow()
+
     private var latestCloudAlerts: List<HexRescueAlert> = emptyList()
     private var latestBleDiscoveries: List<BleDiscoveredEmergency> = emptyList()
     private var latestResponderLocation: Location? = null
+    private var lastResponderLocationUploadMs: Long = 0L
 
     companion object {
         private const val CHANNEL_ID = "rakshaone_hex_rescue_channel"
@@ -224,17 +228,60 @@ class HexagonalRescueManager(
     private fun recomputeNearbyAlerts() {
         val myLoc = latestResponderLocation
         val profile = goodCitizenManager.citizenProfile.value
-        val outgoingIncidentId = _activeOutgoingAlert.value?.incidentId
+        val outgoingAlertNow = _activeOutgoingAlert.value
+        val outgoingIncidentId = outgoingAlertNow?.incidentId
         val mergedByIncident = linkedMapOf<String, HexRescueAlert>()
+        val allCloudMapped = mutableListOf<HexRescueAlert>()
 
         for (cloud in latestCloudAlerts) {
-            if (cloud.incidentId == outgoingIncidentId || cloud.isOutgoingFromSelf) continue
-            val dist = if (myLoc != null && (cloud.victimLatitude != 0.0 || cloud.victimLongitude != 0.0)) {
+            val isOutgoing = (outgoingIncidentId != null && cloud.incidentId == outgoingIncidentId) || cloud.isOutgoingFromSelf
+            val rLat = cloud.acceptedResponderLat
+            val rLng = cloud.acceptedResponderLng
+            val hasResponderCoords = rLat != null && rLng != null && (rLat != 0.0 || rLng != 0.0)
+            val hasVictimCoords = cloud.victimLatitude != 0.0 || cloud.victimLongitude != 0.0
+            val responderDistToVictim = if (hasResponderCoords && hasVictimCoords) {
+                calculateDistanceMeters(rLat!!, rLng!!, cloud.victimLatitude, cloud.victimLongitude)
+            } else {
+                cloud.distanceMeters
+            }
+            val responderEtaMins = (responderDistToVictim / 80f).toInt().coerceAtLeast(1)
+
+            if (isOutgoing) {
+                val baseOutgoing = outgoingAlertNow ?: cloud
+                val resolvedLat = if (hasVictimCoords) cloud.victimLatitude else baseOutgoing.victimLatitude
+                val resolvedLng = if (hasVictimCoords) cloud.victimLongitude else baseOutgoing.victimLongitude
+                val outDist = if (hasResponderCoords && (resolvedLat != 0.0 || resolvedLng != 0.0)) {
+                    calculateDistanceMeters(rLat!!, rLng!!, resolvedLat, resolvedLng)
+                } else {
+                    responderDistToVictim
+                }
+                val updatedOutgoing = baseOutgoing.copy(
+                    alertId = cloud.alertId.ifBlank { baseOutgoing.alertId },
+                    victimLatitude = resolvedLat,
+                    victimLongitude = resolvedLng,
+                    status = cloud.status,
+                    lifecycleState = cloud.lifecycleState,
+                    acceptedResponderUid = cloud.acceptedResponderUid ?: baseOutgoing.acceptedResponderUid,
+                    acceptedResponderName = cloud.acceptedResponderName ?: baseOutgoing.acceptedResponderName,
+                    acceptedResponderPhone = cloud.acceptedResponderPhone ?: baseOutgoing.acceptedResponderPhone,
+                    acceptedResponderSelfieB64 = cloud.acceptedResponderSelfieB64 ?: baseOutgoing.acceptedResponderSelfieB64,
+                    acceptedResponderLat = rLat ?: baseOutgoing.acceptedResponderLat,
+                    acceptedResponderLng = rLng ?: baseOutgoing.acceptedResponderLng,
+                    distanceMeters = outDist,
+                    estimatedWalkMinutes = (outDist / 80f).toInt().coerceAtLeast(1),
+                    isOutgoingFromSelf = true
+                )
+                _activeOutgoingAlert.value = updatedOutgoing
+                allCloudMapped.add(updatedOutgoing)
+                continue
+            }
+
+            val dist = if (myLoc != null && hasVictimCoords) {
                 calculateDistanceMeters(myLoc.latitude, myLoc.longitude, cloud.victimLatitude, cloud.victimLongitude)
             } else {
                 cloud.distanceMeters
             }
-            val sector = if (myLoc != null && (cloud.victimLatitude != 0.0 || cloud.victimLongitude != 0.0)) {
+            val sector = if (myLoc != null && hasVictimCoords) {
                 bearingToCompassSector(
                     calculateBearingDegrees(myLoc.latitude, myLoc.longitude, cloud.victimLatitude, cloud.victimLongitude)
                 )
@@ -242,12 +289,21 @@ class HexagonalRescueManager(
                 cloud.compassSector
             }
             val walkMins = (dist / 80f).toInt().coerceAtLeast(1)
-            mergedByIncident[cloud.incidentId] = cloud.copy(
+            val mappedCloud = cloud.copy(
                 distanceMeters = dist,
                 estimatedWalkMinutes = walkMins,
                 compassSector = sector
             )
+            mergedByIncident[cloud.incidentId] = mappedCloud
+            allCloudMapped.add(
+                cloud.copy(
+                    distanceMeters = if (hasResponderCoords) responderDistToVictim else dist,
+                    estimatedWalkMinutes = if (hasResponderCoords) responderEtaMins else walkMins,
+                    compassSector = sector
+                )
+            )
         }
+        _allCloudHexAlerts.value = allCloudMapped
 
         for (ble in latestBleDiscoveries) {
             val shortBleKey = ble.incidentId.removePrefix("BLE-")
@@ -478,12 +534,15 @@ class HexagonalRescueManager(
         }
         if (activeAccepted.isEmpty()) return
 
+        val now = System.currentTimeMillis()
+        val shouldSyncCloud = (now - lastResponderLocationUploadMs) >= 2_500L
         for (alert in activeAccepted) {
             val nextState = if (alert.lifecycleState == HexRescueLifecycleState.ARRIVED) {
                 HexRescueLifecycleState.ARRIVED
             } else {
                 HexRescueLifecycleState.EN_ROUTE
             }
+            val stateChanged = alert.lifecycleState != nextState
             val updated = alert.copy(
                 status = if (nextState == HexRescueLifecycleState.ARRIVED) HexAlertStatus.ARRIVED else HexAlertStatus.EN_ROUTE,
                 lifecycleState = nextState,
@@ -491,7 +550,8 @@ class HexagonalRescueManager(
                 acceptedResponderLng = responderLng
             )
             applyAlertUpdate(updated)
-            if (alert.sourceChannel != "BLE") {
+            if (alert.sourceChannel != "BLE" && (shouldSyncCloud || stateChanged)) {
+                lastResponderLocationUploadMs = now
                 scope.launch {
                     try {
                         firestoreRepository?.updateApproachingResponderLocation(

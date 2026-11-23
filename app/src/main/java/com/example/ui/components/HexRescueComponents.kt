@@ -751,6 +751,8 @@ fun GuardianHighAlertCard(
     onPlayAudio: ((String) -> Unit)? = null,
     onStopAudio: (() -> Unit)? = null,
     onWatchVideo: ((String) -> Unit)? = null,
+    responderAlert: HexRescueAlert? = null,
+    onTrackDispatchMap: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     AnimatedVisibility(
@@ -913,6 +915,160 @@ fun GuardianHighAlertCard(
                                         .clip(RoundedCornerShape(8.dp))
                                 )
                                 Text("Rear Cam", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+
+                // Live Verified Responder Tracking synced to Trusted Contact's RakshaOne app
+                if (responderAlert != null) {
+                    val hasResponder = !responderAlert.acceptedResponderName.isNullOrBlank()
+                    val respSelfie: ImageBitmap? = remember(responderAlert.acceptedResponderSelfieB64) {
+                        responderAlert.acceptedResponderSelfieB64?.let { decodeDispatchThumbnail(it) }
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (hasResponder) Color(0xFF0F2924) else WarningAmber.copy(alpha = 0.14f),
+                        border = BorderStroke(1.dp, if (hasResponder) SafetyTeal else WarningAmber),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("guardian_responder_tracking_${alert.dispatchId}")
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            if (hasResponder) {
+                                val rLat = responderAlert.acceptedResponderLat
+                                val rLng = responderAlert.acceptedResponderLng
+                                val distMeters = if (rLat != null && rLng != null && (rLat != 0.0 || rLng != 0.0) &&
+                                    (alert.latitude != 0.0 || alert.longitude != 0.0)
+                                ) {
+                                    com.example.util.HexagonalRescueManager.calculateDistanceMeters(
+                                        alert.latitude,
+                                        alert.longitude,
+                                        rLat,
+                                        rLng
+                                    ).toInt()
+                                } else {
+                                    null
+                                }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    respSelfie?.let { bmp ->
+                                        Image(
+                                            bitmap = bmp,
+                                            contentDescription = "Verified Responder Selfie",
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier
+                                                .size(44.dp)
+                                                .clip(CircleShape)
+                                        )
+                                    }
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Text(
+                                                text = "VERIFIED RESPONDER TRACKING",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Black,
+                                                color = SafetyTeal
+                                            )
+                                            Surface(shape = RoundedCornerShape(4.dp), color = SafetyTeal) {
+                                                Text(
+                                                    text = responderAlert.lifecycleState.name,
+                                                    fontSize = 9.sp,
+                                                    fontWeight = FontWeight.Black,
+                                                    color = Color.White,
+                                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            text = "${responderAlert.acceptedResponderName} • ${responderAlert.acceptedResponderPhone ?: "Verified ID"}",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White
+                                        )
+                                        Text(
+                                            text = buildString {
+                                                if (distMeters != null) {
+                                                    val etaMin = (distMeters / 80).coerceAtLeast(1)
+                                                    append("~${distMeters}m from ${alert.ownerName} (~${etaMin}m walk)")
+                                                } else {
+                                                    append("Responder location syncing live")
+                                                }
+                                                if (rLat != null && rLng != null && (rLat != 0.0 || rLng != 0.0)) {
+                                                    append(" • ${String.format(java.util.Locale.US, "%.4f, %.4f", rLat, rLng)}")
+                                                }
+                                            },
+                                            fontSize = 10.sp,
+                                            color = Color.White.copy(alpha = 0.8f)
+                                        )
+                                    }
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    if (!responderAlert.acceptedResponderPhone.isNullOrBlank()) {
+                                        OutlinedButton(
+                                            onClick = { onDialContact(responderAlert.acceptedResponderPhone) },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White)
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Call Helper", fontSize = 10.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                    if (rLat != null && rLng != null && (rLat != 0.0 || rLng != 0.0)) {
+                                        OutlinedButton(
+                                            onClick = { onOpenMap(rLat, rLng, "Responder ${responderAlert.acceptedResponderName}") },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(Icons.Default.Navigation, contentDescription = null, modifier = Modifier.size(14.dp), tint = SafetyTeal)
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Helper GPS", fontSize = 10.sp, color = SafetyTeal, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                    if (onTrackDispatchMap != null) {
+                                        Button(
+                                            onClick = onTrackDispatchMap,
+                                            colors = ButtonDefaults.buttonColors(containerColor = PoliceBlue),
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(Icons.Default.Map, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Live Map", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            } else {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Hex Rescue Scanning (${responderAlert.currentRadiusMeters.toInt()}m Sector ${responderAlert.compassSector})",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = WarningAmber,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (onTrackDispatchMap != null) {
+                                        androidx.compose.material3.TextButton(
+                                            onClick = onTrackDispatchMap,
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                        ) {
+                                            Text("Live Map", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

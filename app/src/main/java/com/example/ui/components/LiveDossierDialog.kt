@@ -169,6 +169,68 @@ fun LiveDossierDialog(
                 )
                 DossierRow("SHA-256 Digest", dossier.evidenceHashesSummary.ifBlank { "Pending capture" })
 
+                if (!dossier.responderName.isNullOrBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = SafetyTeal.copy(alpha = 0.14f),
+                        border = BorderStroke(1.dp, SafetyTeal),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("dossier_responder_section")
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = "VERIFIED RESPONDER ASSIGNED (${dossier.responderStatus ?: "ACTIVE"})",
+                                fontWeight = FontWeight.Black,
+                                fontSize = 11.sp,
+                                color = SafetyTeal
+                            )
+                            Text(
+                                text = "${dossier.responderName} • ${dossier.responderPhone ?: "RakshaOne ID"}",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
+                            )
+                            val distEta = buildString {
+                                dossier.responderDistanceMeters?.let { append("${it.toInt()}m away") }
+                                dossier.responderEtaMinutes?.let {
+                                    if (isNotEmpty()) append(" • ")
+                                    append("~${it}m walk ETA")
+                                }
+                            }
+                            if (distEta.isNotBlank()) {
+                                Text(text = distEta, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            if (dossier.responderLat != null && dossier.responderLng != null &&
+                                (dossier.responderLat != 0.0 || dossier.responderLng != 0.0)
+                            ) {
+                                Text(
+                                    text = "Responder GPS: ${String.format(Locale.US, "%.5f, %.5f", dossier.responderLat, dossier.responderLng)}",
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                                OutlinedButton(
+                                    onClick = {
+                                        onOpenMaps(
+                                            dossier.responderLat,
+                                            dossier.responderLng,
+                                            "Responder ${dossier.responderName}"
+                                        )
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(Icons.Default.Map, contentDescription = null, modifier = Modifier.size(15.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Track Responder Live GPS", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 HorizontalDivider()
 
                 Row(verticalAlignment = Alignment.CenterVertically) {

@@ -442,7 +442,7 @@ class ExampleRobolectricTest {
       android.content.pm.PackageManager.GET_PERMISSIONS
     )
     val requested = pkgInfo.requestedPermissions?.toSet() ?: emptySet()
-    assertTrue(requested.contains(android.Manifest.permission.SEND_SMS))
+    assertFalse(requested.contains(android.Manifest.permission.SEND_SMS))
     assertFalse(requested.contains(android.Manifest.permission.CALL_PHONE))
     assertFalse(requested.contains(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION))
     assertFalse(requested.contains("android.permission.REQUEST_IGNORE_BATTERY_OPTIMATIONS"))
@@ -1203,6 +1203,180 @@ class ExampleRobolectricTest {
     assertFalse(offlineJson.contains("Diya"))
     assertFalse(offlineJson.contains("dot_nearby_green"))
     assertFalse(offlineJson.contains("avatar_victim_red"))
+  }
+
+  @Test
+  fun `hex rescue manager syncs accepted responder live coordinates to outgoing victim alert and cloud list`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val citizenManager = GoodCitizenManager(context)
+    val hexManager = HexagonalRescueManager(context, citizenManager)
+
+    val outgoing = hexManager.broadcastOutgoingHexSos(
+      incidentId = "INC-SYNC-1",
+      victimName = "Ananya",
+      victimLat = 28.6139,
+      victimLng = 77.2090,
+      locationDescription = "Connaught Place",
+      victimUid = "victim-uid-1"
+    )
+    assertEquals("INC-SYNC-1", hexManager.activeOutgoingAlert.value?.incidentId)
+
+    val responderAcceptedAlert = outgoing.copy(
+      status = HexAlertStatus.EN_ROUTE,
+      lifecycleState = com.example.risk.HexRescueLifecycleState.EN_ROUTE,
+      acceptedResponderUid = "resp-uid-9",
+      acceptedResponderName = "Vikram",
+      acceptedResponderPhone = "+919811112222",
+      acceptedResponderLat = 28.6145,
+      acceptedResponderLng = 77.2098
+    )
+    hexManager.updateResponderInputs(cloudAlerts = listOf(responderAcceptedAlert))
+
+    assertEquals(1, hexManager.allCloudHexAlerts.value.size)
+    val synced = hexManager.activeOutgoingAlert.value
+    assertEquals("Vikram", synced?.acceptedResponderName)
+    assertEquals("+919811112222", synced?.acceptedResponderPhone)
+    assertEquals(com.example.risk.HexRescueLifecycleState.EN_ROUTE, synced?.lifecycleState)
+    assertEquals(28.6145, synced?.acceptedResponderLat ?: 0.0, 0.0001)
+  }
+
+  @Test
+  fun `map geojson renders approaching responder savior pin and distant guardian victim alert when online`() {
+    val now = System.currentTimeMillis()
+    val responderInfo = com.example.ui.components.ApproachingResponderInfo(
+      alertId = "HEX-99",
+      responderName = "Rohan",
+      responderPhone = "+919876543210",
+      responderLat = 28.6150,
+      responderLng = 77.2100,
+      distanceMeters = 180f,
+      statusLabel = "EN_ROUTE",
+      targetVictimName = "Meera",
+      targetVictimLat = 28.6139,
+      targetVictimLng = 77.2090,
+      etaMinutes = 3
+    )
+    val distantHex = HexRescueAlert(
+      alertId = "HEX-99",
+      incidentId = "INC-99",
+      victimName = "Meera",
+      victimLatitude = 28.6139,
+      victimLongitude = 77.2090,
+      status = HexAlertStatus.EN_ROUTE,
+      lifecycleState = com.example.risk.HexRescueLifecycleState.EN_ROUTE
+    )
+    val geoJson = com.example.ui.components.buildAllMapFeaturesGeoJson(
+      pins = emptyList(),
+      activeIncidents = emptyList(),
+      nearbyHexAlerts = listOf(distantHex),
+      nearbyUsers = emptyList(),
+      pois = emptyList(),
+      approachingResponder = responderInfo,
+      isOnline = true,
+      nowMillis = now
+    )
+    assertTrue(geoJson.contains("avatar_savior_green"))
+    assertTrue(geoJson.contains("Rohan"))
+    assertTrue(geoJson.contains("avatar_victim_red"))
+    assertTrue(geoJson.contains("Meera"))
+  }
+
+  @Test
+  fun `volume down detector triggers ONLY for 3 discrete quick presses when locked or screen off`() {
+    val detector = com.example.util.VolumeDownTripleClickDetector()
+
+    // 1. Unlocked & screen on: even 3 rapid presses MUST NOT trigger
+    assertFalse(detector.onVolumeDownEvent(1_000L, isPhoneLockedOrScreenOff = false))
+    assertFalse(detector.onVolumeDownEvent(1_200L, isPhoneLockedOrScreenOff = false))
+    assertFalse(detector.onVolumeDownEvent(1_400L, isPhoneLockedOrScreenOff = false))
+    assertEquals(0, detector.currentPendingPressCount(1_450L))
+
+    // 2. Locked: only 2 presses MUST NOT trigger
+    assertFalse(detector.onVolumeDownEvent(2_000L, isPhoneLockedOrScreenOff = true))
+    assertFalse(detector.onVolumeDownEvent(2_250L, isPhoneLockedOrScreenOff = true))
+    assertEquals(2, detector.currentPendingPressCount(2_300L))
+
+    // Reset by waiting for gap > 650ms
+    assertFalse(detector.onVolumeDownEvent(3_200L, isPhoneLockedOrScreenOff = true))
+    assertEquals(1, detector.currentPendingPressCount(3_200L))
+
+    // 3. Locked: constant hold (isRepeat = true) MUST reset & NOT trigger
+    assertFalse(detector.onVolumeDownEvent(4_000L, isPhoneLockedOrScreenOff = true))
+    assertFalse(detector.onVolumeDownEvent(4_200L, isPhoneLockedOrScreenOff = true))
+    assertFalse(detector.onVolumeDownEvent(4_250L, isPhoneLockedOrScreenOff = true, isRepeat = true))
+    assertEquals(0, detector.currentPendingPressCount(4_260L))
+
+    // 4. Locked: sub-90ms constant-hold burst MUST reset & NOT trigger
+    assertFalse(detector.onVolumeDownEvent(6_000L, isPhoneLockedOrScreenOff = true))
+    assertFalse(detector.onVolumeDownEvent(6_050L, isPhoneLockedOrScreenOff = true))
+    assertFalse(detector.onVolumeDownEvent(6_100L, isPhoneLockedOrScreenOff = true))
+    assertFalse(detector.onVolumeDownEvent(6_150L, isPhoneLockedOrScreenOff = true))
+    assertEquals(0, detector.currentPendingPressCount(6_160L))
+
+    // 5. Locked: gap > 650ms between presses MUST NOT trigger
+    assertFalse(detector.onVolumeDownEvent(8_000L, isPhoneLockedOrScreenOff = true))
+    assertFalse(detector.onVolumeDownEvent(8_220L, isPhoneLockedOrScreenOff = true))
+    assertFalse(detector.onVolumeDownEvent(9_100L, isPhoneLockedOrScreenOff = true)) // 880ms gap -> resets to 1
+    assertFalse(detector.onVolumeDownEvent(9_320L, isPhoneLockedOrScreenOff = true)) // 2nd since reset -> still false
+
+    // 6. Locked: 3 discrete rapid presses (<650ms gap, >=90ms apart, <=1500ms total) TRIGGER!
+    assertFalse(detector.onVolumeDownEvent(12_000L, isPhoneLockedOrScreenOff = true))
+    assertFalse(detector.onVolumeDownEvent(12_250L, isPhoneLockedOrScreenOff = true))
+    assertTrue(detector.onVolumeDownEvent(12_520L, isPhoneLockedOrScreenOff = true))
+    assertEquals(0, detector.currentPendingPressCount(12_530L))
+  }
+
+  @Test
+  fun `three quick volume down presses activate silent mode stealth SOS only when locked or screen off`() {
+    val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+    if (com.google.firebase.FirebaseApp.getApps(app).isEmpty()) {
+      com.google.firebase.FirebaseApp.initializeApp(
+        app,
+        com.google.firebase.FirebaseOptions.Builder()
+          .setApplicationId("1:1234567890:android:testapp")
+          .setApiKey("test-api-key")
+          .setProjectId("rakshaone-test")
+          .build()
+      )
+    }
+    val vm = com.example.ui.MainViewModel(app)
+
+    // Unlocked: 3 quick presses MUST NOT trigger SOS
+    assertFalse(vm.registerVolumeDownPress(1_000L, isRepeat = false, overrideLockedOrScreenOff = false))
+    assertFalse(vm.registerVolumeDownPress(1_200L, isRepeat = false, overrideLockedOrScreenOff = false))
+    assertFalse(vm.registerVolumeDownPress(1_400L, isRepeat = false, overrideLockedOrScreenOff = false))
+    assertEquals(com.example.ui.SosCountdownState.IDLE, vm.sosState.value)
+
+    // Locked with gap > 650ms: MUST NOT trigger SOS
+    assertFalse(vm.registerVolumeDownPress(3_000L, isRepeat = false, overrideLockedOrScreenOff = true))
+    assertFalse(vm.registerVolumeDownPress(3_250L, isRepeat = false, overrideLockedOrScreenOff = true))
+    assertFalse(vm.registerVolumeDownPress(4_200L, isRepeat = false, overrideLockedOrScreenOff = true))
+    assertEquals(com.example.ui.SosCountdownState.IDLE, vm.sosState.value)
+
+    // Locked with 2 presses + hold repeat: MUST NOT trigger SOS
+    assertFalse(vm.registerVolumeDownPress(6_000L, isRepeat = false, overrideLockedOrScreenOff = true))
+    assertFalse(vm.registerVolumeDownPress(6_200L, isRepeat = false, overrideLockedOrScreenOff = true))
+    assertFalse(vm.registerVolumeDownPress(6_240L, isRepeat = true, overrideLockedOrScreenOff = true))
+    assertEquals(com.example.ui.SosCountdownState.IDLE, vm.sosState.value)
+
+    // Locked with 3 discrete quick presses: triggers Silent Mode SOS
+    assertFalse(vm.registerVolumeDownPress(10_000L, isRepeat = false, overrideLockedOrScreenOff = true))
+    assertFalse(vm.registerVolumeDownPress(10_220L, isRepeat = false, overrideLockedOrScreenOff = true))
+    assertTrue(vm.registerVolumeDownPress(10_480L, isRepeat = false, overrideLockedOrScreenOff = true))
+    assertTrue(vm.isSilentMode.value)
+    assertEquals(com.example.ui.SosCountdownState.ACTIVE, vm.sosState.value)
+
+    // Verify LockscreenVolumeSosService + mediaPlayback FGS permission declared in manifest
+    val pkgInfo = app.packageManager.getPackageInfo(
+      app.packageName,
+      android.content.pm.PackageManager.GET_PERMISSIONS or android.content.pm.PackageManager.GET_SERVICES
+    )
+    assertTrue(
+      pkgInfo.requestedPermissions?.contains(android.Manifest.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK) == true
+    )
+    assertTrue(
+      pkgInfo.services?.any { it.name == com.example.service.LockscreenVolumeSosService::class.java.name } == true
+    )
   }
 }
 

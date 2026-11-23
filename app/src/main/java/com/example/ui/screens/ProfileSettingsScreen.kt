@@ -94,6 +94,7 @@ fun ProfileSettingsScreen(
     val currentUser by viewModel.currentUser.collectAsState()
     val goodCitizenProfile by viewModel.goodCitizenProfile.collectAsState()
     val pointsLedger by viewModel.pointsLedger.collectAsState()
+    val isVolumeDownSilentSosEnabled by viewModel.isVolumeDownSilentSosEnabled.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(Unit) {
@@ -733,7 +734,7 @@ fun ProfileSettingsScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("Silent SOS Stealth Mode", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                                Text("Suppresses alarm siren & flashlight strobe during SOS", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Suppresses alarm siren, flash & voice • Auto-activates on Lockscreen 3x Vol-Down", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Switch(
                                 checked = silentSos,
@@ -742,6 +743,22 @@ fun ProfileSettingsScreen(
                                     viewModel.setSilentMode(it)
                                 },
                                 modifier = Modifier.testTag("profile_silent_sos_switch")
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Lockscreen 3x Vol-Down Stealth SOS", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                Text("ONLY when locked or screen off • Ignores long-hold, 2 taps & pauses", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Switch(
+                                checked = isVolumeDownSilentSosEnabled,
+                                onCheckedChange = { viewModel.setVolumeDownSilentSosEnabled(it) },
+                                modifier = Modifier.testTag("profile_lockscreen_vol_down_switch")
                             )
                         }
 

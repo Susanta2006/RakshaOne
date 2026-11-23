@@ -606,29 +606,13 @@ class SafetyRepository(private val context: Context) {
             val audioNote = if (audioFile != null) "Voice audio (.m4a) recorded & uploaded to Cloud Vault." else "Live microphone guard & call shield active."
             val smsBody = "[RAKSHAONE FAKE CALL GUARD] $userName activated Fake Call (${if (config.isAiProactive) "AI Proactive" else "Manual"}). $audioNote Battery: $battery%. GPS: $mapUrl"
 
-            val failedPhones = mutableListOf<String>()
-            for (phone in phones) {
-                if (sendSmsDirectly(phone, smsBody)) {
-                    anySent = true
-                } else {
-                    failedPhones.add(phone)
-                }
-            }
-            if (failedPhones.isNotEmpty()) {
-                com.example.service.CriticalSmsDispatchWorker.enqueue(
-                    context = context,
-                    incidentId = incId,
-                    riskLevel = "R2_HIGH",
-                    userNote = "Fake Call Auto Guard",
-                    latitude = if (hasGps) lat else null,
-                    longitude = if (hasGps) lng else null,
-                    accuracyMeters = if (hasGps) acc else null,
-                    batteryPercent = battery,
-                    fallbackReason = "FAKE_CALL_GUARD_AUTO",
-                    phonesJoined = failedPhones.joinToString(";"),
-                    overrideBody = smsBody
-                )
-            }
+            postPreFilledSmsNotification(
+                notificationId = ("FC_${incId}").hashCode(),
+                title = "Tap to Send Fake Call SMS (${phones.size} Contacts)",
+                subtitle = "RakshaOne app high alert + audio synced • Tap to confirm SMS",
+                phonesJoined = phones.joinToString(";"),
+                smsBody = smsBody
+            )
         }
         anySent
     }
@@ -684,7 +668,9 @@ class SafetyRepository(private val context: Context) {
         userComment: String = "Emergency SOS Triggered",
         resolvedLocation: Location? = null,
         isSnatchTrigger: Boolean = false,
-        triggerOrigin: TriggerOrigin = TriggerOrigin.USER_EXPLICIT_SOS_COUNTDOWN
+        triggerOrigin: TriggerOrigin = TriggerOrigin.USER_EXPLICIT_SOS_COUNTDOWN,
+        silentStealth: Boolean? = null,
+        deviceLocked: Boolean = false
     ): SosDispatchResult = withContext(Dispatchers.IO) {
         _lastCameraCaptureCompleteIncidentId.value = null
         _lastDualCameraResult.value = null
@@ -708,6 +694,11 @@ class SafetyRepository(private val context: Context) {
         }
 
         val user = database.userDao().getUserProfileOnce()
+        val isSilentMode = if (isSnatchTrigger) false else (silentStealth ?: (user?.silentSosMode == true))
+        if (isSilentMode) {
+            sensorsManager.stopSiren()
+            sensorsManager.stopStrobe()
+        }
         val userName = user?.name?.takeIf { it.isNotBlank() } ?: "Citizen"
         val timestamp = System.currentTimeMillis()
         val idSeq = (100000..999999).random()
@@ -790,8 +781,29 @@ class SafetyRepository(private val context: Context) {
             )
         )
 
-        // STEP 0: Tactile confirmation pattern (Morse SOS: ··· --- ···)
-        hapticManager.vibrateEmergencySosTriggered()
+        // STEP 0: Tactile confirmation (subtle single tick in Silent Stealth Mode; full Morse pattern otherwise)
+        if (isSilentMode) {
+            hapticManager.vibrateSosButtonTouch()
+        } else {
+            hapticManager.vibrateEmergencySosTriggered()
+        }
+
+        if (hasRealGps) {
+            try {
+                liveRadarManager.publishLocation(
+                    lat = lat,
+                    lng = lng,
+                    bearing = liveLocation?.bearing ?: 0f,
+                    speed = liveLocation?.speed ?: 0f,
+                    battery = sensorSnap.batteryPercent,
+                    sharingActive = true,
+                    ownerName = userName,
+                    isEmergencyVictim = true,
+                    forceImmediate = true
+                )
+            } catch (_: Exception) {
+            }
+        }
 
         // Publish immediate zero-manual-interference Guardian Cloud Dispatch if online + Google signed in
         val initialCloudDispatched = if (isOnlineNow) {
@@ -804,7 +816,7 @@ class SafetyRepository(private val context: Context) {
                 accuracyMeters = accuracy,
                 locDesc = locDesc,
                 dualResult = null,
-                deviceLocked = false
+                deviceLocked = deviceLocked
             )
         } else false
 
@@ -937,7 +949,7 @@ class SafetyRepository(private val context: Context) {
                                 accuracyMeters = accuracy,
                                 locDesc = locDesc,
                                 dualResult = dualResult,
-                                deviceLocked = false
+                                deviceLocked = deviceLocked
                             )
                         }
                         _lastCameraCaptureCompleteIncidentId.value = incidentId
@@ -982,14 +994,6 @@ class SafetyRepository(private val context: Context) {
                     fallbackReason = fallbackReason,
                     batteryPercent = liveBattery
                 )
-                val failedPhones = mutableListOf<String>()
-                if (assessment.riskLevel.name == "R3_CRITICAL") {
-                    for (phone in phones) {
-                        if (!sendSmsDirectly(phone, backupBody)) {
-                            failedPhones.add(phone)
-                        }
-                    }
-                }
 
                 if (!isOnlineNow) {
                     database.offlineAlertDao().insertAlert(
@@ -1003,31 +1007,15 @@ class SafetyRepository(private val context: Context) {
                             messageText = backupBody,
                             recipientPhones = phones.joinToString(";"),
                             recipientEmails = emails.joinToString(";"),
-                            status = if (failedPhones.isEmpty() && phones.isNotEmpty()) "DISPATCHED" else "PENDING_CONNECTIVITY"
+                            status = "PENDING_CONNECTIVITY"
                         )
                     )
                     queuedOfflineBackup = true
                 }
-
-                if (failedPhones.isNotEmpty() && phones.isNotEmpty()) {
-                    com.example.service.CriticalSmsDispatchWorker.enqueue(
-                        context = context,
-                        incidentId = incidentId,
-                        riskLevel = assessment.riskLevel.name,
-                        userNote = userComment,
-                        latitude = if (hasRealGps) lat else null,
-                        longitude = if (hasRealGps) lng else null,
-                        accuracyMeters = if (hasRealGps) accuracy else null,
-                        batteryPercent = liveBattery,
-                        fallbackReason = fallbackReason,
-                        phonesJoined = failedPhones.joinToString(";"),
-                        overrideBody = backupBody
-                    )
-                }
             }
 
             if (isOnlineNow) {
-                evidenceSyncManager.syncPendingEvidenceToCloud(incidentId)
+                syncEvidenceFilesToCloud(incidentId)
             }
             // Always broadcast BLE emergency beacon for severe R3 SOS (per nearby Bluetooth relay policy)
             bleEmergencyRelay.broadcastEmergencyBeacon(
@@ -1048,7 +1036,9 @@ class SafetyRepository(private val context: Context) {
         } catch (_: Exception) {
         }
 
-        triggerEmergencyHaptic()
+        if (!isSilentMode) {
+            triggerEmergencyHaptic()
+        }
         SosDispatchResult(
             incident = incident,
             hasRealGps = hasRealGps,
@@ -1880,28 +1870,20 @@ class SafetyRepository(private val context: Context) {
                     status = if (networkMonitor.isOnline.value) "READY_FOR_DISPATCH" else "PENDING_CONNECTIVITY"
                 )
             )
-            // Zero-manual-interference silent carrier SMS + WorkManager retry + Cloud Guardian Dispatch
-            val failedPhones = mutableListOf<String>()
-            for (phone in targetPhones) {
-                if (!sendSmsDirectly(phone, alertText)) {
-                    failedPhones.add(phone)
-                }
-            }
-            if (failedPhones.isNotEmpty()) {
-                com.example.service.CriticalSmsDispatchWorker.enqueue(
-                    context = context,
-                    incidentId = incidentId,
-                    riskLevel = tripRisk.riskLevel.name,
-                    userNote = summary,
-                    latitude = if (lat != 0.0 || lng != 0.0) lat else null,
-                    longitude = if (lat != 0.0 || lng != 0.0) lng else null,
-                    accuracyMeters = accuracy,
-                    batteryPercent = sensorsManager.captureDeviceSensorSnapshot(null).batteryPercent,
-                    fallbackReason = "TRIP_ANOMALY_AUTO",
-                    phonesJoined = failedPhones.joinToString(";"),
-                    overrideBody = alertText
-                )
-            }
+            // Prepare Play-Protect-safe pre-filled SMS notification + Cloud Guardian Dispatch (user taps Send in Messages app)
+            com.example.service.CriticalSmsDispatchWorker.enqueue(
+                context = context,
+                incidentId = incidentId,
+                riskLevel = tripRisk.riskLevel.name,
+                userNote = summary,
+                latitude = if (lat != 0.0 || lng != 0.0) lat else null,
+                longitude = if (lat != 0.0 || lng != 0.0) lng else null,
+                accuracyMeters = accuracy,
+                batteryPercent = sensorsManager.captureDeviceSensorSnapshot(null).batteryPercent,
+                fallbackReason = "TRIP_ANOMALY_AUTO",
+                phonesJoined = targetPhones.joinToString(";"),
+                overrideBody = alertText
+            )
         }
 
         if (networkMonitor.isOnline.value) {
@@ -2068,7 +2050,7 @@ class SafetyRepository(private val context: Context) {
             startLiveTripTracking()
         }
 
-        // Auto-send initial trip escort alert silently via SmsManager (zero composer popup interruption)
+        // Pre-filled trip escort SMS draft (Play Protect compliant: zero SEND_SMS)
         if (sharedContactPhones.isNotEmpty()) {
             val mapLink = if (currentLat != 0.0 || currentLng != 0.0) {
                 "https://maps.google.com/?q=$currentLat,$currentLng"
@@ -2076,9 +2058,13 @@ class SafetyRepository(private val context: Context) {
                 "GPS fix acquiring"
             }
             val initialMsg = "[RakshaOne Trip Escort] Started trip from $origin to $destination (${plannedMinutes}m). Live GPS: $mapLink. Check-in every ${checkInIntervalMinutes}m (Corridor: ${corridorM.toInt()}m, Stop alert: ${prolongedStopThresholdMinutes}m)."
-            sharedContactPhones.forEach { phone ->
-                sendSmsDirectly(phone, initialMsg)
-            }
+            postPreFilledSmsNotification(
+                notificationId = ("TRIP_START_$tripId").hashCode(),
+                title = "Tap to Send Trip Start SMS (${sharedContactPhones.size} Contacts)",
+                subtitle = "Pre-filled trip GPS link ready in Messages",
+                phonesJoined = sharedContactPhones.joinToString(";"),
+                smsBody = initialMsg
+            )
         }
     }
 
@@ -2112,9 +2098,13 @@ class SafetyRepository(private val context: Context) {
         val phones = trip.sharedContactPhones.split(";").filter { it.isNotBlank() }
         if (phones.isNotEmpty()) {
             val safeArrivalMsg = "[RakshaOne Trip Completed] Safely arrived at ${trip.destination}."
-            phones.forEach { phone ->
-                sendSmsDirectly(phone, safeArrivalMsg)
-            }
+            postPreFilledSmsNotification(
+                notificationId = ("TRIP_DONE_${trip.tripId}").hashCode(),
+                title = "Tap to Send Safe Arrival SMS",
+                subtitle = "Pre-filled safe arrival message ready for Messages",
+                phonesJoined = phones.joinToString(";"),
+                smsBody = safeArrivalMsg
+            )
         }
     }
 
@@ -2125,7 +2115,7 @@ class SafetyRepository(private val context: Context) {
         database.tripDao().updateTrip(trip.copy(status = "CANCELLED"))
     }
 
-    // Share live GPS coordinates update automatically via silent SmsManager (or fallback Share Sheet if no phones)
+    // Share live GPS coordinates update via pre-filled Messages SMS composer (or fallback Share Sheet if no phones)
     suspend fun shareLiveTripLocationUpdate(
         trip: TripEntity,
         contacts: List<TrustedContactEntity>,
@@ -2143,11 +2133,7 @@ class SafetyRepository(private val context: Context) {
 
         val phones = contacts.map { it.phone }.filter { it.isNotBlank() }
         if (phones.isNotEmpty()) {
-            var anyDirect = false
-            phones.forEach { phone ->
-                if (sendSmsDirectly(phone, message)) anyDirect = true
-            }
-            if (!anyDirect) {
+            withContext(Dispatchers.Main) {
                 openSmsMessenger(phones.joinToString(";"), message)
             }
         } else {
@@ -2155,39 +2141,17 @@ class SafetyRepository(private val context: Context) {
         }
     }
 
-    private fun sendSmsDirectly(phoneNumber: String, messageText: String): Boolean {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
-            return false
-        }
-        return try {
-            val cleaned = phoneNumber.replace(Regex("[^+\\d]"), "")
-            if (cleaned.isBlank()) return false
-            val smsManager = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                context.getSystemService(android.telephony.SmsManager::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                android.telephony.SmsManager.getDefault()
-            }
-            if (smsManager != null) {
-                val parts = smsManager.divideMessage(messageText)
-                if (parts.size > 1) {
-                    smsManager.sendMultipartTextMessage(cleaned, null, parts, null, null)
-                } else {
-                    smsManager.sendTextMessage(cleaned, null, messageText, null, null)
-                }
-                true
-            } else {
-                false
-            }
-        } catch (e: Exception) {
-            false
-        }
-    }
-
     fun sendDirectOrIntentSms(phoneNumber: String, messageText: String, allowUiFallback: Boolean = false) {
-        if (sendSmsDirectly(phoneNumber, messageText)) return
         if (allowUiFallback) {
             openSmsMessenger(phoneNumber, messageText)
+        } else {
+            postPreFilledSmsNotification(
+                notificationId = ("SMS_${phoneNumber.hashCode()}").hashCode(),
+                title = "Tap to Send Safety SMS",
+                subtitle = "Pre-filled safety alert ready for Messages app",
+                phonesJoined = phoneNumber,
+                smsBody = messageText
+            )
         }
     }
 
@@ -2334,54 +2298,38 @@ class SafetyRepository(private val context: Context) {
         for (alert in pending) {
             try {
                 val phones = alert.recipientPhones.split(";").filter { it.isNotBlank() }
-                val emails = alert.recipientEmails.split(";").filter { it.isNotBlank() }
-                var anySilentChannelDelivered = false
-
-                // 1. Try silent SmsManager dispatch (works in background if SEND_SMS granted)
-                for (phone in phones) {
-                    if (sendSmsDirectly(phone, alert.messageText)) {
-                        anySilentChannelDelivered = true
+                if (initiatedFromUserAction && phones.isNotEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        openSmsMessenger(phones.joinToString(";"), alert.messageText)
                     }
-                }
-
-                // 2. Fallback to device native SMS composer ONLY when triggered from foreground UI
-                if (!anySilentChannelDelivered) {
-                    if (initiatedFromUserAction) {
-                        var openedComposer = false
-                        if (phones.isNotEmpty()) {
-                            withContext(Dispatchers.Main) {
-                                openSmsMessenger(phones.joinToString(";"), alert.messageText)
-                            }
-                            openedComposer = true
-                        }
-                        if (openedComposer) {
-                            database.offlineAlertDao().markDispatched(alert.alertId)
-                            dispatchedCount++
-                        } else {
-                            requiresUserActionCount++
-                        }
-                    } else {
-                        // Cannot open interactive activities from background connectivity callback (Android BAL policy)
-                        requiresUserActionCount++
-                        database.offlineAlertDao().updateAlert(
-                            alert.copy(
-                                dispatchAttempts = alert.dispatchAttempts + 1,
-                                lastAttemptTime = System.currentTimeMillis()
-                            )
-                        )
-                    }
-                } else {
                     database.offlineAlertDao().markDispatched(alert.alertId)
                     dispatchedCount++
                     database.auditLogDao().insertLog(
                         AuditLogEntity(
                             actor = "RakshaOne Sync Engine",
                             role = "SYSTEM",
-                            action = "OFFLINE_ALERT_DISPATCHED",
+                            action = "OFFLINE_ALERT_COMPOSER_OPENED",
                             targetId = alert.alertId,
-                            details = "Queued offline alert ${alert.alertId} (${alert.alertType}) silently dispatched upon network reconnection."
+                            details = "Opened pre-filled SMS composer for queued offline alert ${alert.alertId} (${alert.alertType})."
                         )
                     )
+                } else if (phones.isNotEmpty()) {
+                    postPreFilledSmsNotification(
+                        notificationId = ("OFFLINE_${alert.alertId}").hashCode(),
+                        title = "Tap to Send Offline Alert SMS (${phones.size} Contacts)",
+                        subtitle = "Internet restored • Tap to confirm sending queued SOS SMS",
+                        phonesJoined = phones.joinToString(";"),
+                        smsBody = alert.messageText
+                    )
+                    requiresUserActionCount++
+                    database.offlineAlertDao().updateAlert(
+                        alert.copy(
+                            dispatchAttempts = alert.dispatchAttempts + 1,
+                            lastAttemptTime = System.currentTimeMillis()
+                        )
+                    )
+                } else {
+                    requiresUserActionCount++
                 }
             } catch (_: Exception) {
                 requiresUserActionCount++
@@ -2504,37 +2452,9 @@ class SafetyRepository(private val context: Context) {
             } catch (_: Exception) {
             }
 
-            // 2. Autonomous carrier SmsManager dispatch (bypasses manual interaction) + WorkManager retry
-            var directSentCount = 0
-            val failedPhones = mutableListOf<String>()
-            for (phone in targetPhones) {
-                if (sendSmsDirectly(phone, offlineMsg)) {
-                    directSentCount++
-                } else {
-                    failedPhones.add(phone)
-                }
-            }
-            if (failedPhones.isNotEmpty() && targetPhones.isNotEmpty()) {
-                com.example.service.CriticalSmsDispatchWorker.enqueue(
-                    context = context,
-                    incidentId = incidentRef,
-                    riskLevel = if (activeInc != null) "R3_CRITICAL" else "R2_HIGH",
-                    userNote = "Internet Connectivity Drop Black-Box",
-                    latitude = if (hasCoords) lat else null,
-                    longitude = if (hasCoords) lng else null,
-                    accuracyMeters = currentLoc?.accuracy,
-                    batteryPercent = battery,
-                    fallbackReason = "NETWORK_LOSS_BLACKBOX",
-                    phonesJoined = failedPhones.joinToString(";"),
-                    overrideBody = offlineMsg
-                )
-            }
-
-            // 3. Post actionable notification + notify UI cleanly (composer only opens if direct SmsManager didn't send)
+            // 2. Post actionable pre-filled SMS notification + notify UI cleanly (user taps Send in Messages app)
             if (phonesJoined.isNotBlank()) {
-                if (directSentCount < targetPhones.size) {
-                    postOfflineNetworkSmsNotification(phonesJoined, offlineMsg, battery, targetPhones.size)
-                }
+                postOfflineNetworkSmsNotification(phonesJoined, offlineMsg, battery, targetPhones.size)
                 _offlineConnectivityAlert.tryEmit(
                     OfflineConnectivityAlert(
                         message = offlineMsg,
@@ -2542,7 +2462,7 @@ class SafetyRepository(private val context: Context) {
                         batteryPercent = battery,
                         latitude = if (hasCoords) lat else null,
                         longitude = if (hasCoords) lng else null,
-                        directSmsSent = directSentCount > 0
+                        directSmsSent = false
                     )
                 )
             }
@@ -2551,11 +2471,12 @@ class SafetyRepository(private val context: Context) {
         }
     }
 
-    private fun postOfflineNetworkSmsNotification(
+    private fun postPreFilledSmsNotification(
+        notificationId: Int,
+        title: String,
+        subtitle: String,
         phonesJoined: String,
-        smsBody: String,
-        batteryPercent: Int,
-        contactCount: Int
+        smsBody: String
     ) {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -2568,10 +2489,10 @@ class SafetyRepository(private val context: Context) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val ch = NotificationChannel(
                     channelId,
-                    "Offline Black-Box Alerts",
+                    "Emergency & Offline Pre-Filled SMS Alerts",
                     NotificationManager.IMPORTANCE_HIGH
                 ).apply {
-                    description = "Instant offline location + battery alerts when internet drops"
+                    description = "Instant pre-filled location + safety SMS drafts"
                 }
                 nm.createNotificationChannel(ch)
             }
@@ -2581,23 +2502,38 @@ class SafetyRepository(private val context: Context) {
             }
             val pi = PendingIntent.getActivity(
                 context,
-                4911,
+                notificationId,
                 smsIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             val notification = NotificationCompat.Builder(context, channelId)
                 .setSmallIcon(android.R.drawable.ic_dialog_alert)
-                .setContentTitle("Internet Off • Battery $batteryPercent% (${contactCount} Family)")
-                .setContentText("Tap to send offline GPS + Battery SMS (BLE Mesh active)")
+                .setContentTitle(title)
+                .setContentText(subtitle)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(smsBody))
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setAutoCancel(true)
                 .setContentIntent(pi)
                 .addAction(android.R.drawable.ic_menu_send, "Send SMS Now", pi)
                 .build()
-            nm.notify(4911, notification)
+            nm.notify(notificationId, notification)
         } catch (_: Exception) {
         }
+    }
+
+    private fun postOfflineNetworkSmsNotification(
+        phonesJoined: String,
+        smsBody: String,
+        batteryPercent: Int,
+        contactCount: Int
+    ) {
+        postPreFilledSmsNotification(
+            notificationId = 4911,
+            title = "Internet Off • Battery $batteryPercent% ($contactCount Family)",
+            subtitle = "Tap to send pre-filled GPS + Battery SMS (BLE Mesh active)",
+            phonesJoined = phonesJoined,
+            smsBody = smsBody
+        )
     }
 
     // Cost-free emergency email dispatch with ALL audio, video, and photo attachments

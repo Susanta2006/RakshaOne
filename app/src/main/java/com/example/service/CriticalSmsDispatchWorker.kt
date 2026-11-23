@@ -1,11 +1,16 @@
 package com.example.service
 
 import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
-import android.telephony.SmsManager
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.work.BackoffPolicy
 import androidx.work.CoroutineWorker
@@ -20,10 +25,9 @@ import com.example.data.model.IncidentEventEntity
 import java.util.concurrent.TimeUnit
 
 /**
- * Autonomous WorkManager background task that dispatches carrier SMS via [SmsManager]
- * whenever the device enters an active `R3_CRITICAL` state or suffers an internet drop
- * (`NETWORK_LOSS_BLACKBOX` / `SOS_OFFLINE_BACKUP`), bypassing manual user interaction and
- * retrying across temporary radio/connectivity drops without requiring a NetworkType.CONNECTED constraint.
+ * Play-Protect-compliant WorkManager task that prepares a pre-filled emergency SMS/MMS draft
+ * (`Intent.ACTION_SENDTO` `smsto:`) via an actionable high-priority notification so the user
+ * can tap Send manually in their carrier Messages app without requiring restricted `SEND_SMS`.
  */
 class CriticalSmsDispatchWorker(
     appContext: Context,
@@ -32,6 +36,7 @@ class CriticalSmsDispatchWorker(
 
     companion object {
         private const val TAG = "CriticalSmsWorker"
+        private const val CHANNEL_ID = "rakshaone_prefilled_sms_channel"
         const val KEY_INCIDENT_ID = "incident_id"
         const val KEY_RISK_LEVEL = "risk_level"
         const val KEY_USER_NOTE = "user_note"
@@ -110,9 +115,6 @@ class CriticalSmsDispatchWorker(
 
         val database = AppDatabase.getDatabase(applicationContext)
         val activeIncident = database.incidentDao().getIncidentById(incidentId)
-        val pendingAlerts = database.offlineAlertDao().getPendingAlertsOnce()
-            .filter { it.incidentId == incidentId }
-
         val userProfile = database.userDao().getUserProfileOnce()
         val userName = userProfile?.name?.takeIf { it.isNotBlank() } ?: "Citizen"
 
@@ -128,24 +130,6 @@ class CriticalSmsDispatchWorker(
 
         if (rawPhones.isEmpty()) {
             return Result.success()
-        }
-
-        val hasSmsPermission = ContextCompat.checkSelfPermission(
-            applicationContext,
-            Manifest.permission.SEND_SMS
-        ) == PackageManager.PERMISSION_GRANTED
-
-        if (!hasSmsPermission) {
-            database.auditLogDao().insertLog(
-                AuditLogEntity(
-                    actor = "CriticalSmsWorker",
-                    role = "SYSTEM",
-                    action = "SMS_PERMISSION_MISSING",
-                    targetId = incidentId,
-                    details = "SEND_SMS permission not granted; queued alert awaits user permission or manual composer."
-                )
-            )
-            return Result.failure()
         }
 
         val lat = inputData.getDouble(KEY_LAT, 0.0).takeIf { it != 0.0 }
@@ -171,72 +155,80 @@ class CriticalSmsDispatchWorker(
             )
         }
 
-        var sentCount = 0
-        for (phone in rawPhones) {
-            if (sendViaSmsManager(phone, messageBody)) {
-                sentCount++
-            }
-        }
+        postPreFilledSmsNotification(
+            incidentId = incidentId,
+            phonesJoined = rawPhones.joinToString(";"),
+            smsBody = messageBody,
+            contactCount = rawPhones.size
+        )
 
-        return if (sentCount > 0) {
-            pendingAlerts.forEach { alert ->
-                database.offlineAlertDao().markDispatched(alert.alertId)
-            }
-            database.incidentEventDao().insertEvent(
-                IncidentEventEntity(
-                    incidentId = incidentId,
-                    timestamp = System.currentTimeMillis(),
-                    oldStatus = "ACTIVE",
-                    newStatus = "AUTO_SMS_SENT",
-                    actor = "CriticalSmsDispatchWorker",
-                    note = "WorkManager auto-dispatched carrier SMS via SmsManager to $sentCount/${rawPhones.size} contact(s) ($fallbackReason)."
-                )
+        database.incidentEventDao().insertEvent(
+            IncidentEventEntity(
+                incidentId = incidentId,
+                timestamp = System.currentTimeMillis(),
+                oldStatus = "ACTIVE",
+                newStatus = "PREFILLED_SMS_READY",
+                actor = "CriticalSmsDispatchWorker",
+                note = "Pre-filled SMS notification ready for ${rawPhones.size} trusted contact(s) ($fallbackReason); tap notification to confirm Send in Messages."
             )
-            database.auditLogDao().insertLog(
-                AuditLogEntity(
-                    actor = userName,
-                    role = "SYSTEM",
-                    action = "WORKMANAGER_SMS_DISPATCHED",
-                    targetId = incidentId,
-                    details = "SmsManager sent $sentCount/${rawPhones.size} critical SMS alerts ($fallbackReason)."
-                )
+        )
+        database.auditLogDao().insertLog(
+            AuditLogEntity(
+                actor = userName,
+                role = "SYSTEM",
+                action = "WORKMANAGER_PREFILLED_SMS_READY",
+                targetId = incidentId,
+                details = "Prepared pre-filled SMS composer notification for ${rawPhones.size} contact(s) ($fallbackReason)."
             )
-            Result.success()
-        } else if (runAttemptCount < 5) {
-            pendingAlerts.forEach { alert ->
-                database.offlineAlertDao().updateAlert(
-                    alert.copy(
-                        dispatchAttempts = alert.dispatchAttempts + 1,
-                        lastAttemptTime = System.currentTimeMillis()
-                    )
-                )
-            }
-            Result.retry()
-        } else {
-            Result.failure()
-        }
+        )
+        return Result.success()
     }
 
-    private fun sendViaSmsManager(phoneNumber: String, messageText: String): Boolean {
-        return try {
-            val cleaned = phoneNumber.replace(Regex("[^+\\d]"), "")
-            if (cleaned.isBlank()) return false
-            val smsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                applicationContext.getSystemService(SmsManager::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                SmsManager.getDefault()
-            } ?: return false
-            val parts = smsManager.divideMessage(messageText)
-            if (parts.size > 1) {
-                smsManager.sendMultipartTextMessage(cleaned, null, parts, null, null)
-            } else {
-                smsManager.sendTextMessage(cleaned, null, messageText, null, null)
+    private fun postPreFilledSmsNotification(
+        incidentId: String,
+        phonesJoined: String,
+        smsBody: String,
+        contactCount: Int
+    ) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                ContextCompat.checkSelfPermission(applicationContext, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ) {
+                return
             }
-            true
-        } catch (e: Exception) {
-            Log.w(TAG, "SmsManager send failed: ${e.message}")
-            false
+            val nm = applicationContext.getSystemService(NotificationManager::class.java) ?: return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val ch = NotificationChannel(
+                    CHANNEL_ID,
+                    "Pre-Filled Emergency SMS Backup",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "One-tap pre-filled Messages SMS draft for Trusted Contacts"
+                }
+                nm.createNotificationChannel(ch)
+            }
+            val smsIntent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:$phonesJoined")).apply {
+                putExtra("sms_body", smsBody)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            val pi = PendingIntent.getActivity(
+                applicationContext,
+                ("PREFILL_$incidentId").hashCode(),
+                smsIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                .setContentTitle("Tap to Send SOS SMS ($contactCount Contacts)")
+                .setContentText("Pre-filled live GPS message ready in Messages app")
+                .setStyle(NotificationCompat.BigTextStyle().bigText(smsBody))
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setContentIntent(pi)
+                .addAction(android.R.drawable.ic_menu_send, "Open Messages to Send", pi)
+                .build()
+            nm.notify(("PREFILL_$incidentId").hashCode(), notification)
+        } catch (_: Exception) {
         }
     }
 }

@@ -154,8 +154,18 @@ class MainActivity : FragmentActivity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
-            viewModel.registerVolumeButtonPress()
+        val isRepeat = (event?.repeatCount ?: 0) > 0
+        when (keyCode) {
+            KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                if (viewModel.registerVolumeDownPress(isRepeat = isRepeat)) {
+                    return true
+                }
+            }
+            KeyEvent.KEYCODE_VOLUME_UP -> {
+                if (!isRepeat) {
+                    viewModel.registerVolumeButtonPress()
+                }
+            }
         }
         return super.onKeyDown(keyCode, event)
     }
@@ -173,6 +183,7 @@ class MainActivity : FragmentActivity() {
         super.onResume()
         viewModel.refreshBatteryOptimizationStatus()
         viewModel.refreshBluetoothMeshState()
+        viewModel.syncLockscreenVolumeSosService()
     }
 }
 
@@ -214,6 +225,7 @@ fun RakshaOneApp(viewModel: MainViewModel) {
             viewModel.startLocationTracking()
         }
         viewModel.refreshBluetoothMeshState()
+        viewModel.syncLockscreenVolumeSosService()
         if (!hasPromptedBluetoothEnable &&
             viewModel.hasBluetoothConnectPermission() &&
             !viewModel.isBluetoothMeshEnabled()
@@ -230,8 +242,7 @@ fun RakshaOneApp(viewModel: MainViewModel) {
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION,
             Manifest.permission.CAMERA,
-            Manifest.permission.RECORD_AUDIO,
-            Manifest.permission.SEND_SMS
+            Manifest.permission.RECORD_AUDIO
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)

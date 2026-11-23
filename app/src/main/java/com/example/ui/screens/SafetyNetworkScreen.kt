@@ -90,6 +90,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.runtime.saveable.rememberSaveable
+import com.example.data.model.HexRescueAlert
 import com.example.data.model.RelationshipTrustRules
 import com.example.data.model.TrustedContactEntity
 import com.example.data.repository.CloudEmergencyDispatch
@@ -114,6 +115,7 @@ fun SafetyNetworkScreen(
     val userProfile by viewModel.userProfile.collectAsState()
     val locationState by viewModel.locationState.collectAsState()
     val incomingGuardianAlerts by viewModel.incomingGuardianAlerts.collectAsState()
+    val guardianResponderAlerts by viewModel.guardianResponderAlertsByIncident.collectAsState()
     val installedContactsMap by viewModel.installedContactsMap.collectAsState()
     val playingAudioIncidentId by viewModel.playingAudioIncidentId.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -304,6 +306,7 @@ fun SafetyNetworkScreen(
                 items(incomingGuardianAlerts, key = { "alert_${it.dispatchId}" }) { alert ->
                     IncomingGuardianAlertCard(
                         alert = alert,
+                        responderAlert = guardianResponderAlerts[alert.dispatchId],
                         isAudioPlaying = playingAudioIncidentId == alert.dispatchId,
                         onOpenMap = {
                             viewModel.openIncidentInMaps(
@@ -314,7 +317,10 @@ fun SafetyNetworkScreen(
                         },
                         onPlayAudio = { viewModel.playGuardianAudio(alert.dispatchId) },
                         onStopAudio = { viewModel.stopGuardianAudio() },
-                        onWatchVideo = { viewModel.openGuardianVideo(alert.dispatchId) }
+                        onWatchVideo = { viewModel.openGuardianVideo(alert.dispatchId) },
+                        onDialResponder = { phone -> viewModel.dialNumber(phone) },
+                        onOpenResponderMap = { lat, lng, label -> viewModel.openIncidentInMaps(lat, lng, label) },
+                        onTrackDispatchMap = { viewModel.setOperatorMode(true) }
                     )
                 }
             }
@@ -809,11 +815,15 @@ fun TrustedContactCard(
 @Composable
 private fun IncomingGuardianAlertCard(
     alert: CloudEmergencyDispatch,
+    responderAlert: HexRescueAlert? = null,
     isAudioPlaying: Boolean,
     onOpenMap: () -> Unit,
     onPlayAudio: () -> Unit,
     onStopAudio: () -> Unit,
-    onWatchVideo: () -> Unit
+    onWatchVideo: () -> Unit,
+    onDialResponder: (String) -> Unit = {},
+    onOpenResponderMap: (Double, Double, String) -> Unit = { _, _, _ -> },
+    onTrackDispatchMap: () -> Unit = {}
 ) {
     val isFakeCallGuard = alert.alertType == "FAKE_CALL_GUARD"
     val accentColor = if (isFakeCallGuard) SafetyTeal else EmergencyRed
@@ -960,6 +970,113 @@ private fun IncomingGuardianAlertCard(
                                     .clip(RoundedCornerShape(8.dp))
                             )
                             Text("Rear Cam", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
+            if (responderAlert != null && !responderAlert.acceptedResponderName.isNullOrBlank()) {
+                val respSelfie: ImageBitmap? = remember(responderAlert.acceptedResponderSelfieB64) {
+                    responderAlert.acceptedResponderSelfieB64?.let { decodeBase64Thumbnail(it) }
+                }
+                val rLat = responderAlert.acceptedResponderLat
+                val rLng = responderAlert.acceptedResponderLng
+                val distMeters = if (rLat != null && rLng != null && (rLat != 0.0 || rLng != 0.0) &&
+                    (alert.latitude != 0.0 || alert.longitude != 0.0)
+                ) {
+                    com.example.util.HexagonalRescueManager.calculateDistanceMeters(
+                        alert.latitude,
+                        alert.longitude,
+                        rLat,
+                        rLng
+                    ).toInt()
+                } else null
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = Color(0xFF0F2924),
+                    border = BorderStroke(1.dp, SafetyTeal),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("network_responder_tracking_${alert.dispatchId}")
+                ) {
+                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            respSelfie?.let { bmp ->
+                                Image(
+                                    bitmap = bmp,
+                                    contentDescription = "Verified Responder Selfie",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .size(42.dp)
+                                        .clip(CircleShape)
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "RESPONDER ${responderAlert.lifecycleState.name}",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = SafetyTeal
+                                )
+                                Text(
+                                    text = "${responderAlert.acceptedResponderName} • ${responderAlert.acceptedResponderPhone ?: "Verified ID"}",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = buildString {
+                                        if (distMeters != null) {
+                                            append("~${distMeters}m away (~${(distMeters / 80).coerceAtLeast(1)}m walk)")
+                                        } else {
+                                            append("Responder live location active")
+                                        }
+                                        if (rLat != null && rLng != null && (rLat != 0.0 || rLng != 0.0)) {
+                                            append(" • ${String.format(Locale.US, "%.4f, %.4f", rLat, rLng)}")
+                                        }
+                                    },
+                                    fontSize = 10.sp,
+                                    color = Color.White.copy(alpha = 0.8f)
+                                )
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            if (!responderAlert.acceptedResponderPhone.isNullOrBlank()) {
+                                OutlinedButton(
+                                    onClick = { onDialResponder(responderAlert.acceptedResponderPhone) },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White)
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Call Helper", fontSize = 10.sp, color = Color.White)
+                                }
+                            }
+                            if (rLat != null && rLng != null && (rLat != 0.0 || rLng != 0.0)) {
+                                OutlinedButton(
+                                    onClick = { onOpenResponderMap(rLat, rLng, "Responder ${responderAlert.acceptedResponderName}") },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.Map, contentDescription = null, modifier = Modifier.size(14.dp), tint = SafetyTeal)
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Helper GPS", fontSize = 10.sp, color = SafetyTeal)
+                                }
+                            }
+                            Button(
+                                onClick = onTrackDispatchMap,
+                                colors = ButtonDefaults.buttonColors(containerColor = PoliceBlue),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Live Map", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }

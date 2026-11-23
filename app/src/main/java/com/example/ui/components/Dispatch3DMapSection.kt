@@ -3,6 +3,7 @@ package com.example.ui.components
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
@@ -10,8 +11,10 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.location.Location
 import android.net.Uri
+import android.util.Base64
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -69,6 +72,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -85,6 +91,8 @@ import com.example.data.model.IncidentEntity
 import com.example.data.model.RelationshipTrustRules
 import com.example.data.model.HighRiskZoneEntity
 import com.example.data.model.TrustedContactEntity
+import com.example.data.repository.CloudEmergencyDispatch
+import com.example.risk.HexRescueLifecycleState
 import com.example.ui.theme.EmergencyRed
 import com.example.ui.theme.PoliceBlue
 import com.example.ui.theme.SafetyTeal
@@ -92,6 +100,7 @@ import com.example.ui.theme.TacticalBorder
 import com.example.ui.theme.TacticalCard
 import com.example.ui.theme.TacticalSurface
 import com.example.ui.theme.WarningAmber
+import com.example.util.HexagonalRescueManager
 import com.example.util.LiveRadarManager
 import com.example.util.LiveRadarPin
 import com.example.util.NearbySupportUser
@@ -144,7 +153,13 @@ data class ApproachingResponderInfo(
     val responderPhone: String?,
     val responderLat: Double,
     val responderLng: Double,
-    val distanceMeters: Float
+    val distanceMeters: Float,
+    val responderSelfieB64: String? = null,
+    val statusLabel: String = "EN_ROUTE",
+    val targetVictimName: String? = null,
+    val targetVictimLat: Double? = null,
+    val targetVictimLng: Double? = null,
+    val etaMinutes: Int = 1
 )
 
 @Composable
@@ -165,6 +180,9 @@ fun Dispatch3DMapSection(
     onDismissDisconnectAlert: () -> Unit,
     onOpenExternalMap: (Double, Double, String) -> Unit,
     onDialEmergency: (String) -> Unit = {},
+    activeOutgoingHexAlert: HexRescueAlert? = null,
+    allCloudHexAlerts: List<HexRescueAlert> = emptyList(),
+    activeGuardianAlert: CloudEmergencyDispatch? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -215,30 +233,48 @@ fun Dispatch3DMapSection(
         }
     }
 
-    // Identify active approaching responder to the victim (if any accepted rescue request exists)
-    val approachingResponder = remember(nearbyHexAlerts, selfLocation) {
-        val acceptedAlert = nearbyHexAlerts.firstOrNull { alert ->
-            (alert.status == HexAlertStatus.ACCEPTED || alert.status == HexAlertStatus.EN_ROUTE) &&
-                alert.acceptedResponderLat != null && alert.acceptedResponderLng != null &&
-                (alert.acceptedResponderLat != 0.0 || alert.acceptedResponderLng != 0.0)
-        }
+    // Identify active approaching responder for Victim OR Trusted Contact OR Nearby Rescue
+    val approachingResponder = remember(activeOutgoingHexAlert, activeGuardianAlert, allCloudHexAlerts, nearbyHexAlerts, selfLocation) {
+        fun HexRescueAlert.hasLiveAcceptedResponder(): Boolean =
+            (status == HexAlertStatus.ACCEPTED || status == HexAlertStatus.EN_ROUTE || status == HexAlertStatus.ARRIVED ||
+                lifecycleState == HexRescueLifecycleState.RESPONDER_ACCEPTED ||
+                lifecycleState == HexRescueLifecycleState.EN_ROUTE ||
+                lifecycleState == HexRescueLifecycleState.ARRIVED) &&
+                (!acceptedResponderName.isNullOrBlank() ||
+                    (acceptedResponderLat != null && acceptedResponderLng != null &&
+                        (acceptedResponderLat != 0.0 || acceptedResponderLng != 0.0)))
+
+        val acceptedAlert = activeOutgoingHexAlert?.takeIf { it.hasLiveAcceptedResponder() }
+            ?: activeGuardianAlert?.let { guard ->
+                allCloudHexAlerts.firstOrNull { it.incidentId == guard.dispatchId && it.hasLiveAcceptedResponder() }
+            }
+            ?: nearbyHexAlerts.firstOrNull { it.hasLiveAcceptedResponder() }
+            ?: allCloudHexAlerts.firstOrNull { it.hasLiveAcceptedResponder() }
+
         if (acceptedAlert != null) {
-            val rLat = acceptedAlert.acceptedResponderLat!!
-            val rLng = acceptedAlert.acceptedResponderLng!!
-            val dist = if (selfLocation != null) {
-                val out = FloatArray(1)
-                Location.distanceBetween(selfLocation.latitude, selfLocation.longitude, rLat, rLng, out)
-                out[0]
+            val vLat = acceptedAlert.victimLatitude.takeIf { it != 0.0 } ?: selfLocation?.latitude ?: 0.0
+            val vLng = acceptedAlert.victimLongitude.takeIf { it != 0.0 } ?: selfLocation?.longitude ?: 0.0
+            val rLat = acceptedAlert.acceptedResponderLat?.takeIf { it != 0.0 } ?: vLat
+            val rLng = acceptedAlert.acceptedResponderLng?.takeIf { it != 0.0 } ?: vLng
+            val dist = if ((vLat != 0.0 || vLng != 0.0) && (rLat != 0.0 || rLng != 0.0)) {
+                HexagonalRescueManager.calculateDistanceMeters(vLat, vLng, rLat, rLng)
             } else {
                 acceptedAlert.distanceMeters
             }
+            val etaMin = (dist / 80f).roundToInt().coerceAtLeast(1)
             ApproachingResponderInfo(
                 alertId = acceptedAlert.alertId,
                 responderName = acceptedAlert.acceptedResponderName?.ifBlank { "Verified Citizen" } ?: "Verified Citizen",
                 responderPhone = acceptedAlert.acceptedResponderPhone,
                 responderLat = rLat,
                 responderLng = rLng,
-                distanceMeters = dist
+                distanceMeters = dist,
+                responderSelfieB64 = acceptedAlert.acceptedResponderSelfieB64,
+                statusLabel = acceptedAlert.lifecycleState.name,
+                targetVictimName = if (acceptedAlert.isOutgoingFromSelf) null else acceptedAlert.victimName,
+                targetVictimLat = vLat.takeIf { it != 0.0 },
+                targetVictimLng = vLng.takeIf { it != 0.0 },
+                etaMinutes = etaMin
             )
         } else {
             null
@@ -325,11 +361,11 @@ fun Dispatch3DMapSection(
         }
     }
 
-    val geoJsonPinsString = remember(allPinsList, activeIncidents, nearbyHexAlerts, nearbyUsers, placeIntel.pois, approachingResponder, highRiskZones, isOnline) {
+    val geoJsonPinsString = remember(allPinsList, activeIncidents, nearbyHexAlerts, allCloudHexAlerts, nearbyUsers, placeIntel.pois, approachingResponder, highRiskZones, isOnline) {
         buildAllMapFeaturesGeoJson(
             pins = allPinsList,
             activeIncidents = activeIncidents,
-            nearbyHexAlerts = nearbyHexAlerts,
+            nearbyHexAlerts = (nearbyHexAlerts + allCloudHexAlerts).distinctBy { it.alertId },
             nearbyUsers = nearbyUsers,
             pois = placeIntel.pois,
             approachingResponder = approachingResponder,
@@ -347,12 +383,17 @@ fun Dispatch3DMapSection(
     }
 
     val approachLineGeoJson = remember(selfLocation, approachingResponder) {
-        if (selfLocation != null && approachingResponder != null) {
+        val targetLat = approachingResponder?.targetVictimLat ?: selfLocation?.latitude
+        val targetLng = approachingResponder?.targetVictimLng ?: selfLocation?.longitude
+        if (approachingResponder != null && targetLat != null && targetLng != null &&
+            (approachingResponder.responderLat != 0.0 || approachingResponder.responderLng != 0.0) &&
+            (targetLat != 0.0 || targetLng != 0.0)
+        ) {
             buildApproachLineGeoJson(
                 fromLat = approachingResponder.responderLat,
                 fromLng = approachingResponder.responderLng,
-                toLat = selfLocation.latitude,
-                toLng = selfLocation.longitude
+                toLat = targetLat,
+                toLng = targetLng
             )
         } else {
             buildEmptyFeatureCollectionGeoJson()
@@ -795,14 +836,26 @@ fun Dispatch3DMapSection(
             }
         }
 
-        // 3. Approaching Responder Card (Victim Relief: see accepted helper approaching live!)
+        // 3. Approaching Responder Card (Uber-style live telemetry for Victim & Trusted Contacts)
         approachingResponder?.let { resp ->
             item {
+                val respSelfieBitmap: ImageBitmap? = remember(resp.responderSelfieB64) {
+                    val b64 = resp.responderSelfieB64
+                    if (b64.isNullOrBlank()) null
+                    else try {
+                        val bytes = Base64.decode(b64, Base64.DEFAULT)
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("dispatch_approaching_responder_card"),
                     shape = RoundedCornerShape(12.dp),
                     colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1035)),
-                    border = BorderStroke(1.2.dp, Color(0xFF8B5CF6))
+                    border = BorderStroke(1.3.dp, Color(0xFF8B5CF6))
                 ) {
                     Row(
                         modifier = Modifier
@@ -812,28 +865,65 @@ fun Dispatch3DMapSection(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                            Box(
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF8B5CF6)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(Icons.Default.DirectionsWalk, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                            if (respSelfieBitmap != null) {
+                                Image(
+                                    bitmap = respSelfieBitmap,
+                                    contentDescription = "Responder ${resp.responderName} selfie",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(CircleShape)
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF8B5CF6)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.DirectionsWalk, contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp))
+                                }
                             }
                             Spacer(modifier = Modifier.width(10.dp))
                             Column {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = SafetyTeal
+                                    ) {
+                                        Text(
+                                            text = resp.statusLabel,
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Black,
+                                            fontSize = 9.sp,
+                                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                    Text(
+                                        text = "${resp.distanceMeters.roundToInt()}m • ~${resp.etaMinutes}m walk",
+                                        color = Color(0xFFA78BFA),
+                                        fontWeight = FontWeight.Black,
+                                        fontSize = 11.sp
+                                    )
+                                }
                                 Text(
-                                    text = "HELPER APPROACHING • ${resp.distanceMeters.roundToInt()}m away",
-                                    color = Color(0xFFA78BFA),
-                                    fontWeight = FontWeight.Black,
-                                    fontSize = 11.sp
-                                )
-                                Text(
-                                    text = "${resp.responderName} is en route to your location",
+                                    text = if (resp.targetVictimName != null) {
+                                        "${resp.responderName} heading to ${resp.targetVictimName}"
+                                    } else {
+                                        "${resp.responderName} is heading to your location"
+                                    },
                                     color = Color.White,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 12.sp
+                                )
+                                Text(
+                                    text = "Live GPS: ${String.format(Locale.US, "%.4f, %.4f", resp.responderLat, resp.responderLng)}",
+                                    color = Color.White.copy(alpha = 0.72f),
+                                    fontSize = 10.sp
                                 )
                             }
                         }
@@ -841,7 +931,9 @@ fun Dispatch3DMapSection(
                             if (!resp.responderPhone.isNullOrBlank()) {
                                 IconButton(
                                     onClick = { onDialEmergency(resp.responderPhone) },
-                                    modifier = Modifier.size(32.dp)
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("dispatch_call_responder_button")
                                 ) {
                                     Icon(Icons.Default.Call, contentDescription = "Call Responder", tint = SafetyTeal, modifier = Modifier.size(18.dp))
                                 }
@@ -849,9 +941,10 @@ fun Dispatch3DMapSection(
                             Button(
                                 onClick = { focusCoordinates(resp.responderLat, resp.responderLng, zoom = 17.0) },
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8B5CF6)),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                modifier = Modifier.testTag("dispatch_track_responder_button")
                             ) {
-                                Icon(Icons.Default.CenterFocusStrong, contentDescription = null, modifier = Modifier.size(12.dp))
+                                Icon(Icons.Default.CenterFocusStrong, contentDescription = null, modifier = Modifier.size(13.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text("Track", fontSize = 11.sp)
                             }

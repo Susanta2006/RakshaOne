@@ -348,6 +348,15 @@
             const medical = readField(fields, "medicalSummary") || "None recorded";
             const evidence = readField(fields, "evidenceSummary") || "SHA-256 verification pending";
             const policeStatus = readField(fields, "policeStatus") || "ELIGIBLE";
+            const responderName = readField(fields, "responderName");
+            const responderPhone = readField(fields, "responderPhone");
+            const responderStatus = readField(fields, "responderStatus");
+            const responderLat = readField(fields, "responderLat");
+            const responderLng = readField(fields, "responderLng");
+            const responderDistanceMeters = readField(fields, "responderDistanceMeters");
+            const responderEtaMinutes = readField(fields, "responderEtaMinutes");
+            const responderMapsUrl = readField(fields, "responderMapsUrl") ||
+              (responderLat != null && responderLng != null ? ("https://maps.google.com/?q=" + responderLat + "," + responderLng) : "");
 
             badgeEl.className = "badge badge-r3";
             badgeEl.textContent = "R3_CRITICAL • " + policeStatus;
@@ -357,11 +366,39 @@
             const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
             lastUpdatedEl.textContent = "Last updated: " + timeStr + (isManual ? " (manual)" : " (auto)");
 
-            // Check if coordinates or medical data changed to trigger subtle highlight
+            // Check if coordinates, medical data, or responder GPS changed to trigger subtle highlight
             const hasLocationChanged = lastDossierData && (lastDossierData.lat !== lat || lastDossierData.lng !== lng);
             const hasMedicalChanged = lastDossierData && (lastDossierData.medical !== medical);
+            const hasResponderChanged = lastDossierData && (
+              lastDossierData.responderLat !== responderLat ||
+              lastDossierData.responderLng !== responderLng ||
+              lastDossierData.responderStatus !== responderStatus
+            );
 
-            lastDossierData = { lat: lat, lng: lng, medical: medical };
+            lastDossierData = {
+              lat: lat,
+              lng: lng,
+              medical: medical,
+              responderLat: responderLat,
+              responderLng: responderLng,
+              responderStatus: responderStatus
+            };
+
+            let responderHtml = "";
+            if (responderName) {
+              const distLabel = responderDistanceMeters != null ? (Math.round(Number(responderDistanceMeters)) + "m away") : "Live tracking active";
+              const etaLabel = responderEtaMinutes != null ? (" • ~" + Math.round(Number(responderEtaMinutes)) + " min walk ETA") : "";
+              const respCoordsHtml = (responderLat != null && responderLng != null)
+                ? '<br/><span class="mono">' + Number(responderLat).toFixed(5) + ', ' + Number(responderLng).toFixed(5) + '</span>'
+                : '';
+              responderHtml =
+                '<div class="label" style="color: var(--teal);">Verified Citizen Responder (' + escapeHtml(responderStatus || "EN_ROUTE") + ')</div>' +
+                '<div class="value' + (hasResponderChanged ? ' highlight-update' : '') + '" style="padding:10px; border:1px solid rgba(20,184,166,0.4); border-radius:8px; background:rgba(20,184,166,0.08);">' +
+                  escapeHtml(responderName) + (responderPhone ? (' • ' + escapeHtml(responderPhone)) : '') +
+                  '<br/><span style="font-size:13px; color:var(--teal);">' + escapeHtml(distLabel + etaLabel) + '</span>' +
+                  respCoordsHtml +
+                '</div>';
+            }
 
             contentEl.innerHTML =
               '<div class="label">Incident Identifier</div>' +
@@ -371,6 +408,7 @@
               '<div class="label">Live Location Coordinates &amp; Accuracy</div>' +
               '<div class="value' + (hasLocationChanged ? ' highlight-update' : '') + '">' + escapeHtml(locality) + '<br/><span class="mono">' +
                 Number(lat).toFixed(5) + ', ' + Number(lng).toFixed(5) + ' (±' + Math.round(Number(accuracy)) + 'm)</span></div>' +
+              responderHtml +
               '<div class="label">Critical Medical Identity &amp; Notes</div>' +
               '<div class="value' + (hasMedicalChanged ? ' highlight-update' : '') + '">' + escapeHtml(medical) + '</div>' +
               '<div class="label">Tamper-Evident SHA-256 Evidence Summary</div>' +
@@ -378,6 +416,8 @@
               '<div class="actions">' +
                 '<a class="btn btn-red" href="tel:112">Dial 112 ERSS</a>' +
                 '<a class="btn btn-blue" target="_blank" rel="noopener noreferrer" href="' + escapeHtml(mapsUrl) + '">Open GPS in Maps</a>' +
+                (responderPhone ? ('<a class="btn btn-outline" href="tel:' + escapeHtml(responderPhone) + '">Call Responder</a>') : '') +
+                (responderMapsUrl ? ('<a class="btn btn-outline" target="_blank" rel="noopener noreferrer" href="' + escapeHtml(responderMapsUrl) + '">Track Responder GPS</a>') : '') +
                 '<button id="manual-refresh-btn" class="btn btn-outline" onclick="window.manualRefreshDossier()">🔄 Refresh Telemetry</button>' +
               '</div>';
           })
