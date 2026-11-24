@@ -46,10 +46,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import com.example.data.model.CachedIncomingAlertEntity
 import com.example.data.model.HighRiskZoneEntity
 import com.example.data.model.LocationEmergencyInfo
 import com.example.data.model.OfflineAlertEntity
 import com.example.data.model.SavedRoutineEntity
+import com.example.data.model.toCachedEntity
+import com.example.data.model.toCloudEmergencyDispatch
+import kotlinx.coroutines.flow.map
 import com.example.risk.EmergencyEscalationOrchestrator
 import com.example.risk.EmergencyEscalationPolicyEngine
 import com.example.risk.PerceptionObservation
@@ -162,7 +166,8 @@ class SafetyRepository(private val context: Context) {
         context = context,
         goodCitizenManager = goodCitizenManager,
         bleEmergencyRelay = bleEmergencyRelay,
-        firestoreRepository = firestoreRiskRepository
+        firestoreRepository = firestoreRiskRepository,
+        cachedIncomingAlertDao = database.cachedIncomingAlertDao()
     )
     val riskEngine = RiskIntelligenceEngine()
     val escalationOrchestrator by lazy {
@@ -250,6 +255,20 @@ class SafetyRepository(private val context: Context) {
     val riskAssessments = database.riskAssessmentDao().getRecentAssessments()
     val escalationWorkflows = database.escalationWorkflowDao().getAllWorkflows()
     val pointsLedger = database.pointsLedgerDao().getAllEntries()
+    val cachedIncomingAlerts: Flow<List<CachedIncomingAlertEntity>> = database.cachedIncomingAlertDao().getAllCachedAlerts()
+    val cachedGuardianDispatches: Flow<List<CloudEmergencyDispatch>> = database.cachedIncomingAlertDao().getCachedGuardianDispatches().map { list ->
+        list.map { it.toCloudEmergencyDispatch() }
+    }
+
+    suspend fun getCachedGuardianDispatchesOnce(): List<CloudEmergencyDispatch> {
+        return database.cachedIncomingAlertDao().getCachedGuardianDispatchesOnce().map { it.toCloudEmergencyDispatch() }
+    }
+
+    suspend fun cacheIncomingGuardianDispatches(dispatches: List<CloudEmergencyDispatch>) {
+        if (dispatches.isEmpty()) return
+        val entities = dispatches.map { it.toCachedEntity() }
+        database.cachedIncomingAlertDao().insertAlerts(entities)
+    }
 
     init {
         com.example.service.R3CriticalMonitorWorker.schedulePeriodicMonitor(context)
@@ -281,6 +300,9 @@ class SafetyRepository(private val context: Context) {
         repositoryScope.launch {
             networkMonitor.isOnline.collect { online ->
                 liveRadarManager.setConnectivityOnline(online)
+                if (!online) {
+                    hexagonalRescueManager.reloadFromLocalCache()
+                }
             }
         }
         // Automatically sync finalized .m4a voice recordings (SOS & Fake Call Guard) to Evidence Vault + Guardians
@@ -798,7 +820,7 @@ class SafetyRepository(private val context: Context) {
                     battery = sensorSnap.batteryPercent,
                     sharingActive = true,
                     ownerName = userName,
-                    isEmergencyVictim = true,
+                    isSosActive = true,
                     forceImmediate = true
                 )
             } catch (_: Exception) {
@@ -1358,6 +1380,10 @@ class SafetyRepository(private val context: Context) {
                 details = "Assigned unit: $unitName"
             )
         )
+    }
+
+    suspend fun deleteEvidenceForIncident(incidentId: String) = withContext(Dispatchers.IO) {
+        database.evidenceDao().deleteEvidenceForIncident(incidentId)
     }
 
     suspend fun operatorUpdateStatus(

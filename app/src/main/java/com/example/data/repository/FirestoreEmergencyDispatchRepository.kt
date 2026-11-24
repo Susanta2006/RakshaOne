@@ -333,12 +333,16 @@ class FirestoreEmergencyDispatchRepository(private val db: FirebaseFirestore) {
                     }
                     uidMap.clear()
                     snapshot?.documents?.forEach { doc ->
-                        val item = doc.toObject(
-                            CloudEmergencyDispatch::class.java,
-                            DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
-                        )
-                        if (item != null) {
-                            uidMap[doc.id] = item
+                        try {
+                            val item = doc.toObject(
+                                CloudEmergencyDispatch::class.java,
+                                DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                            )
+                            if (item != null) {
+                                uidMap[doc.id] = item
+                            }
+                        } catch (e: Exception) {
+                            Log.w("FirestoreDispatchRepo", "Skipping unparseable dispatch ${doc.id}: ${e.message}")
                         }
                     }
                     emitMerged()
@@ -357,12 +361,16 @@ class FirestoreEmergencyDispatchRepository(private val db: FirebaseFirestore) {
                     }
                     emailMap.clear()
                     snapshot?.documents?.forEach { doc ->
-                        val item = doc.toObject(
-                            CloudEmergencyDispatch::class.java,
-                            DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
-                        )
-                        if (item != null) {
-                            emailMap[doc.id] = item
+                        try {
+                            val item = doc.toObject(
+                                CloudEmergencyDispatch::class.java,
+                                DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                            )
+                            if (item != null) {
+                                emailMap[doc.id] = item
+                            }
+                        } catch (e: Exception) {
+                            Log.w("FirestoreDispatchRepo", "Skipping unparseable dispatch ${doc.id}: ${e.message}")
                         }
                     }
                     emitMerged()

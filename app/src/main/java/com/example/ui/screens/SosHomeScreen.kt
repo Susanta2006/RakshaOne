@@ -1791,40 +1791,26 @@ fun SosHomeScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Row 5: Encrypted Audio Recording & Share ALL Evidence Bundle (Email / Apps)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                SosToolCard(
-                    title = if (isAudioRecording) "Stop Rec (${audioSecondsRemaining}s)" else "Record Audio",
-                    subtitle = if (isAudioRecording) "Encrypting AES-256" else "Encrypted vault mic",
-                    icon = if (isAudioRecording) Icons.Default.Stop else Icons.Default.Mic,
-                    accentColor = EmergencyRed,
-                    isActive = isAudioRecording,
-                    onClick = {
-                        val hasMic = ContextCompat.checkSelfPermission(
-                            context,
-                            Manifest.permission.RECORD_AUDIO
-                        ) == PackageManager.PERMISSION_GRANTED
-                        if (hasMic) {
-                            viewModel.toggleManualAudioRecording()
-                        } else {
-                            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                        }
-                    },
-                    modifier = Modifier.weight(1f).testTag("tool_audio_record_button")
-                )
-                SosToolCard(
-                    title = "Share ALL Media",
-                    subtitle = "All Audio+Vid+Photo",
-                    icon = Icons.Default.ShareLocation,
-                    accentColor = SafetyTeal,
-                    isActive = false,
-                    onClick = { viewModel.shareAllEvidenceBundleEverywhere() },
-                    modifier = Modifier.weight(1f).testTag("tool_whatsapp_trusted_button")
-                )
-            }
+            // Row 5: Encrypted Audio Recording
+            SosToolCard(
+                title = if (isAudioRecording) "Stop Rec (${audioSecondsRemaining}s)" else "Record Audio",
+                subtitle = if (isAudioRecording) "Encrypting AES-256" else "Encrypted vault mic",
+                icon = if (isAudioRecording) Icons.Default.Stop else Icons.Default.Mic,
+                accentColor = EmergencyRed,
+                isActive = isAudioRecording,
+                onClick = {
+                    val hasMic = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+                    if (hasMic) {
+                        viewModel.toggleManualAudioRecording()
+                    } else {
+                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().testTag("tool_audio_record_button")
+            )
 
             Spacer(modifier = Modifier.height(10.dp))
 
@@ -1899,29 +1885,15 @@ fun SosHomeScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Row 8: Email ALL Evidence + Export Zero-FIR Legal Timeline
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            // Export Zero-FIR Legal Timeline
+            FilledTonalButton(
+                onClick = { viewModel.exportAndShareZeroFirTimeline() },
+                modifier = Modifier.fillMaxWidth().testTag("tool_export_zero_fir_button"),
+                shape = RoundedCornerShape(12.dp)
             ) {
-                FilledTonalButton(
-                    onClick = { viewModel.emailAllEvidenceToGuardians() },
-                    modifier = Modifier.weight(1f).testTag("tool_email_all_evidence_button"),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Icon(Icons.Default.Email, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Email ALL Media", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                }
-                FilledTonalButton(
-                    onClick = { viewModel.exportAndShareZeroFirTimeline() },
-                    modifier = Modifier.weight(1f).testTag("tool_export_zero_fir_button"),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Icon(Icons.Default.Description, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Zero-FIR Timeline", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                }
+                Icon(Icons.Default.Description, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Export Zero-FIR Legal Timeline", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
             }
 
             Spacer(modifier = Modifier.height(10.dp))

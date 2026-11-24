@@ -27,11 +27,15 @@ import com.example.util.GoodCitizenManager
 import com.example.util.HexagonalRescueManager
 import com.example.util.PhoneNormalizer
 import kotlinx.coroutines.flow.first
+import com.example.data.model.toCachedEntity
+import com.example.data.model.toCloudEmergencyDispatch
+import com.example.data.model.toHexRescueAlert
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -1377,6 +1381,116 @@ class ExampleRobolectricTest {
     assertTrue(
       pkgInfo.services?.any { it.name == com.example.service.LockscreenVolumeSosService::class.java.name } == true
     )
+  }
+
+  @Test
+  fun `room database caches incoming emergency alerts for zero-network offline resilience`() {
+    runBlocking {
+      val dao = db.cachedIncomingAlertDao()
+
+      val hexAlert = HexRescueAlert(
+        alertId = "HEX-OFFLINE-TEST-1",
+        incidentId = "INC-OFFLINE-1",
+        victimUid = "victim-123",
+        victimName = "Kavita Rao",
+        victimLatitude = 28.5355,
+        victimLongitude = 77.3910,
+        currentRadiusMeters = 750f,
+        expansionStage = 1,
+        secondsRemainingInStage = 25,
+        dangerType = "R3 CRITICAL SOS",
+        timestamp = System.currentTimeMillis(),
+        status = HexAlertStatus.BROADCASTING,
+        lifecycleState = com.example.risk.HexRescueLifecycleState.REQUEST_BROADCAST,
+        compassSector = "E",
+        sourceChannel = "FIRESTORE+BLE",
+        evidenceSummary = "Audio scream detected; Dual-Camera captured",
+        victimLocationDescription = "Sector 18 Metro Station, Gate 2",
+        distanceMeters = 340f,
+        estimatedWalkMinutes = 4,
+        policeDispatched = true,
+        policeStatus = com.example.risk.PoliceEscalationStatus.ELIGIBLE
+      )
+
+      // 1. Insert alert into Room cache
+      val entity = hexAlert.toCachedEntity()
+      dao.insertAlert(entity)
+
+      // 2. Query offline cache
+      val cachedList = dao.getActiveHexAlertsOnce()
+      assertTrue(cachedList.isNotEmpty())
+      val cached = cachedList.firstOrNull { it.alertId == "HEX-OFFLINE-TEST-1" }
+      assertNotNull(cached)
+      assertEquals("Kavita Rao", cached?.victimName)
+      assertEquals("INC-OFFLINE-1", cached?.incidentId)
+      assertEquals(28.5355, cached?.victimLatitude ?: 0.0, 0.0001)
+      assertEquals("E", cached?.compassSector)
+      assertEquals("Sector 18 Metro Station, Gate 2", cached?.victimLocationDescription)
+
+      // 3. Map back to HexRescueAlert domain model
+      val domainModel = cached!!.toHexRescueAlert()
+      assertEquals("HEX-OFFLINE-TEST-1", domainModel.alertId)
+      assertEquals(HexAlertStatus.BROADCASTING, domainModel.status)
+      assertEquals(340f, domainModel.distanceMeters, 0.1f)
+
+      // 4. Update responder status in offline cache (e.g., responder marks ACCEPTED offline)
+      val accepted = domainModel.copy(
+        status = HexAlertStatus.ACCEPTED,
+        lifecycleState = com.example.risk.HexRescueLifecycleState.RESPONDER_ACCEPTED,
+        acceptedResponderUid = "responder-99",
+        acceptedResponderName = "Arjun",
+        acceptedResponderPhone = "+919800011122"
+      )
+      dao.insertAlert(accepted.toCachedEntity())
+
+      val updatedCached = dao.getAlertById("HEX-OFFLINE-TEST-1")
+      assertNotNull(updatedCached)
+      assertEquals("ACCEPTED", updatedCached?.status)
+      assertEquals("Arjun", updatedCached?.acceptedResponderName)
+      assertEquals("+919800011122", updatedCached?.acceptedResponderPhone)
+
+      // Clean up test entry
+      dao.deleteAlert("HEX-OFFLINE-TEST-1")
+      assertNull(dao.getAlertById("HEX-OFFLINE-TEST-1"))
+    }
+  }
+
+  @Test
+  fun `guardian emergency dispatches cache into Room for offline medical and GPS access`() {
+    runBlocking {
+      val dao = db.cachedIncomingAlertDao()
+
+      val dispatch = com.example.data.repository.CloudEmergencyDispatch(
+        id = "DISP-OFFLINE-99",
+        dispatchId = "DISP-OFFLINE-99",
+        ownerUid = "owner-uid-88",
+        ownerName = "Pooja Sharma",
+        ownerPhone = "+919822334455",
+        alertType = "ANTI_SNATCH_ALARM",
+        status = "ACTIVE",
+        latitude = 19.0760,
+        longitude = 72.8777,
+        mapsUrl = "https://maps.google.com/?q=19.0760,72.8777",
+        locationSummary = "Marine Drive Promenade",
+        medicalSummary = "Blood: B+; Asthma; Emergency Contact: Mother",
+        evidenceSummary = "High-g snatch acceleration detected; front camera snapshot taken",
+        batteryPercent = 65,
+        frontPhotoBase64 = "base64_sample_jpg"
+      )
+
+      // Cache incoming guardian dispatch in local Room database via mapper
+      dao.insertAlert(dispatch.toCachedEntity())
+
+      val offlineCached = dao.getCachedGuardianDispatchesOnce().map { it.toCloudEmergencyDispatch() }
+      assertTrue(offlineCached.isNotEmpty())
+      val match = offlineCached.firstOrNull { it.dispatchId == "DISP-OFFLINE-99" }
+      assertNotNull(match)
+      assertEquals("Pooja Sharma", match?.ownerName)
+      assertEquals("ANTI_SNATCH_ALARM", match?.alertType)
+      assertEquals("Marine Drive Promenade", match?.locationSummary)
+      assertEquals("Blood: B+; Asthma; Emergency Contact: Mother", match?.medicalSummary)
+      assertEquals("base64_sample_jpg", match?.frontPhotoBase64)
+    }
   }
 }
 

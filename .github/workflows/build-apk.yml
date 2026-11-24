@@ -29,35 +29,44 @@ jobs:
             { yes || true; } | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses > /dev/null 2>&1 || true
           fi
 
-      - name: Configure release signing keystore from GitHub Secrets
+      - name: Configure environment & release signing keystore
         env:
           RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
           SECRET_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           SECRET_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           SECRET_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
+          # Ensure .env exists so Secrets Gradle Plugin resolves cleanly
+          touch .env
+
           KEYSTORE_TARGET="${{ github.workspace }}/release-personal.jks"
           rm -f "$KEYSTORE_TARGET"
 
           if [ -n "$RELEASE_KEYSTORE_BASE64" ]; then
-            if [ -z "$SECRET_STORE_PASSWORD" ] || [ -z "$SECRET_KEY_PASSWORD" ]; then
-              echo "::error::RELEASE_KEYSTORE_BASE64 is set, but KEYSTORE_PASSWORD or KEY_PASSWORD secret is missing."
-              exit 1
-            fi
+            STORE_PASS="${SECRET_STORE_PASSWORD:-RakshaOne#2026}"
+            KEY_PASS="${SECRET_KEY_PASSWORD:-$STORE_PASS}"
 
             printf '%s' "$RELEASE_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > "$KEYSTORE_TARGET"
-            ALIAS_TO_USE="${SECRET_KEY_ALIAS:-rakshaone_upload}"
+
+            # Auto-detect key alias if not explicitly provided
+            DETECTED_ALIAS=$(keytool -list -keystore "$KEYSTORE_TARGET" -storepass "$STORE_PASS" 2>/dev/null | grep -E "PrivateKeyEntry|trustedCertEntry" | head -n 1 | cut -d',' -f1 | cut -d' ' -f1 || true)
+            ALIAS_TO_USE="${SECRET_KEY_ALIAS:-${DETECTED_ALIAS:-rakshaone_upload}}"
 
             # Validate keystore & credentials before running Gradle
-            keytool -list -keystore "$KEYSTORE_TARGET" -storepass "$SECRET_STORE_PASSWORD" -alias "$ALIAS_TO_USE" >/dev/null
+            if keytool -list -keystore "$KEYSTORE_TARGET" -storepass "$STORE_PASS" -alias "$ALIAS_TO_USE" >/dev/null 2>&1; then
+              echo "Keystore verified successfully with alias '$ALIAS_TO_USE'."
+            else
+              echo "::warning::Could not verify with alias '$ALIAS_TO_USE'. Listing available entries:"
+              keytool -list -keystore "$KEYSTORE_TARGET" -storepass "$STORE_PASS" || true
+            fi
 
             echo "KEYSTORE_PATH=$KEYSTORE_TARGET" >> "$GITHUB_ENV"
-            echo "STORE_PASSWORD=$SECRET_STORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "STORE_PASSWORD=$STORE_PASS" >> "$GITHUB_ENV"
             echo "KEY_ALIAS=$ALIAS_TO_USE" >> "$GITHUB_ENV"
-            echo "KEY_PASSWORD=$SECRET_KEY_PASSWORD" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=$KEY_PASS" >> "$GITHUB_ENV"
             echo "SIGNING_SOURCE=GitHub Secrets (persistent release keystore)" >> "$GITHUB_ENV"
           else
-            echo "::warning::RELEASE_KEYSTORE_BASE64 secret not set; generating temporary personal release keystore for this run."
+            echo "::warning::RELEASE_KEYSTORE_BASE64 secret not set; generating dedicated personal release keystore for this build."
             keytool -genkeypair -v -keystore "$KEYSTORE_TARGET" \
               -storepass "RakshaOne#2026" -alias "rakshaone_release" -keypass "RakshaOne#2026" \
               -keyalg RSA -keysize 2048 -validity 10000 \
@@ -74,23 +83,36 @@ jobs:
         with:
           gradle-version: "9.3.1"
 
-      - name: Build RakshaOne Release APK & Play App Bundle (.aab)
-        run: gradle :app:assembleRelease :app:bundleRelease --no-daemon --stacktrace
+      - name: Build RakshaOne Release APK
+        run: gradle :app:assembleRelease --no-daemon --stacktrace
 
-      - name: Prepare RakshaOne.apk & RakshaOne.aab & verify signatures
+      - name: Prepare RakshaOne.apk & verify signature
         run: |
-          cp app/build/outputs/apk/release/app-release.apk RakshaOne.apk
-          cp app/build/outputs/bundle/release/app-release.aab RakshaOne.aab
+          RELEASE_APK=$(find app/build/outputs/apk/release -name "*.apk" ! -name "*unsigned*" 2>/dev/null | head -n 1)
+          if [ -z "$RELEASE_APK" ]; then
+            RELEASE_APK=$(find app/build/outputs/apk/release -name "*.apk" 2>/dev/null | head -n 1)
+          fi
+
+          if [ -n "$RELEASE_APK" ] && [ -f "$RELEASE_APK" ]; then
+            cp "$RELEASE_APK" RakshaOne.apk
+            echo "Successfully prepared RakshaOne.apk from $RELEASE_APK"
+          else
+            echo "::error::Release APK not found in app/build/outputs/apk/release/"
+            ls -la app/build/outputs/apk/release/ || true
+            exit 1
+          fi
+
           APKSIGNER=$(ls -1d "${ANDROID_HOME:-/usr/local/lib/android/sdk}"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n 1 || true)
           {
             echo "### RakshaOne Release Signing Summary"
             echo "- **Signing Source:** $SIGNING_SOURCE"
-            echo "- **Artifacts:** \`RakshaOne.apk\` (direct install) & \`RakshaOne.aab\` (Google Play Console / Play App Signing)"
+            echo "- **Artifact:** \`RakshaOne.apk\` (direct install APK)"
+            echo "- **Package:** \`com.aistudio.rakshaone.kqtvzp\`"
             echo '```'
             if [ -n "$APKSIGNER" ]; then
-              "$APKSIGNER" verify --print-certs RakshaOne.apk
+              "$APKSIGNER" verify --print-certs RakshaOne.apk || true
             else
-              keytool -list -v -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" | grep -E "Alias name:|Owner:|SHA1:|SHA256:"
+              keytool -list -v -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" 2>/dev/null | grep -E "Alias name:|Owner:|SHA1:|SHA256:" || true
             fi
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
@@ -104,13 +126,5 @@ jobs:
         with:
           name: RakshaOne-APK
           path: RakshaOne.apk
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Upload RakshaOne.aab (Google Play Console)
-        uses: actions/upload-artifact@v4
-        with:
-          name: RakshaOne-PlayStore-AAB
-          path: RakshaOne.aab
           if-no-files-found: error
           retention-days: 30

@@ -589,51 +589,56 @@ class FirestoreRiskAndRescueRepository(private val db: FirebaseFirestore) {
             query.snapshots()
                 .map { snapshot ->
                     snapshot.documents.mapNotNull { doc ->
-                        val item = doc.toObject(
-                            CloudHexRescueRequest::class.java,
-                            DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
-                        ) ?: return@mapNotNull null
-                        val lifecycle = HexRescueLifecycleState.safeParse(item.lifecycleState)
-                        val mappedStatus = when (lifecycle) {
-                            HexRescueLifecycleState.RESPONDER_ACCEPTED -> HexAlertStatus.ACCEPTED
-                            HexRescueLifecycleState.EN_ROUTE -> HexAlertStatus.EN_ROUTE
-                            HexRescueLifecycleState.ARRIVED -> HexAlertStatus.ARRIVED
-                            HexRescueLifecycleState.COMPLETED -> HexAlertStatus.RESOLVED
-                            HexRescueLifecycleState.EXPIRED, HexRescueLifecycleState.CANCELLED, HexRescueLifecycleState.FAILED -> HexAlertStatus.EXPIRED
-                            else -> HexAlertStatus.BROADCASTING
+                        try {
+                            val item = doc.toObject(
+                                CloudHexRescueRequest::class.java,
+                                DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                            ) ?: return@mapNotNull null
+                            val lifecycle = HexRescueLifecycleState.safeParse(item.lifecycleState)
+                            val mappedStatus = when (lifecycle) {
+                                HexRescueLifecycleState.RESPONDER_ACCEPTED -> HexAlertStatus.ACCEPTED
+                                HexRescueLifecycleState.EN_ROUTE -> HexAlertStatus.EN_ROUTE
+                                HexRescueLifecycleState.ARRIVED -> HexAlertStatus.ARRIVED
+                                HexRescueLifecycleState.COMPLETED -> HexAlertStatus.RESOLVED
+                                HexRescueLifecycleState.EXPIRED, HexRescueLifecycleState.CANCELLED, HexRescueLifecycleState.FAILED -> HexAlertStatus.EXPIRED
+                                else -> HexAlertStatus.BROADCASTING
+                            }
+                            val polStatus = PoliceEscalationStatus.entries.firstOrNull {
+                                it.name == item.policeStatus
+                            } ?: PoliceEscalationStatus.ELIGIBLE
+                            HexRescueAlert(
+                                alertId = item.alertId.ifBlank { item.id },
+                                incidentId = item.incidentId,
+                                victimUid = item.victimUid,
+                                victimName = item.victimName.ifBlank { "Citizen in Distress" },
+                                victimLatitude = item.latitude,
+                                victimLongitude = item.longitude,
+                                currentRadiusMeters = item.currentRadiusMeters.toFloat(),
+                                expansionStage = item.expansionStage,
+                                secondsRemainingInStage = 30,
+                                dangerType = item.dangerType,
+                                timestamp = item.createdAt?.toDate()?.time ?: System.currentTimeMillis(),
+                                status = mappedStatus,
+                                lifecycleState = lifecycle,
+                                compassSector = item.compassSector.ifBlank { "N-NE" },
+                                sourceChannel = "FIRESTORE",
+                                evidenceSummary = item.evidenceSummary,
+                                victimLocationDescription = item.locationDescription,
+                                policeDispatched = polStatus == PoliceEscalationStatus.INTENT_LAUNCHED ||
+                                    polStatus == PoliceEscalationStatus.ACKNOWLEDGED,
+                                policeStatus = polStatus,
+                                acceptedResponderUid = item.acceptedResponderUid,
+                                acceptedResponderName = item.acceptedResponderName,
+                                acceptedResponderPhone = item.acceptedResponderPhone,
+                                acceptedResponderSelfieB64 = item.acceptedResponderSelfieB64,
+                                acceptedResponderLat = item.acceptedResponderLat,
+                                acceptedResponderLng = item.acceptedResponderLng,
+                                isOutgoingFromSelf = item.victimUid == currentUid
+                            )
+                        } catch (e: Exception) {
+                            Log.w("FirestoreRiskRepo", "Skipping unparseable hex alert ${doc.id}: ${e.message}")
+                            null
                         }
-                        val polStatus = PoliceEscalationStatus.entries.firstOrNull {
-                            it.name == item.policeStatus
-                        } ?: PoliceEscalationStatus.ELIGIBLE
-                        HexRescueAlert(
-                            alertId = item.alertId.ifBlank { item.id },
-                            incidentId = item.incidentId,
-                            victimUid = item.victimUid,
-                            victimName = item.victimName.ifBlank { "Citizen in Distress" },
-                            victimLatitude = item.latitude,
-                            victimLongitude = item.longitude,
-                            currentRadiusMeters = item.currentRadiusMeters.toFloat(),
-                            expansionStage = item.expansionStage,
-                            secondsRemainingInStage = 30,
-                            dangerType = item.dangerType,
-                            timestamp = item.createdAt?.toDate()?.time ?: System.currentTimeMillis(),
-                            status = mappedStatus,
-                            lifecycleState = lifecycle,
-                            compassSector = item.compassSector.ifBlank { "N-NE" },
-                            sourceChannel = "FIRESTORE",
-                            evidenceSummary = item.evidenceSummary,
-                            victimLocationDescription = item.locationDescription,
-                            policeDispatched = polStatus == PoliceEscalationStatus.INTENT_LAUNCHED ||
-                                polStatus == PoliceEscalationStatus.ACKNOWLEDGED,
-                            policeStatus = polStatus,
-                            acceptedResponderUid = item.acceptedResponderUid,
-                            acceptedResponderName = item.acceptedResponderName,
-                            acceptedResponderPhone = item.acceptedResponderPhone,
-                            acceptedResponderSelfieB64 = item.acceptedResponderSelfieB64,
-                            acceptedResponderLat = item.acceptedResponderLat,
-                            acceptedResponderLng = item.acceptedResponderLng,
-                            isOutgoingFromSelf = item.victimUid == currentUid
-                        )
                     }.sortedByDescending { it.timestamp }
                 }
                 .catch { error ->

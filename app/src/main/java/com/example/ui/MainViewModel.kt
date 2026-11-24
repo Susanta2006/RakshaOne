@@ -162,6 +162,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val trustedContacts: StateFlow<List<TrustedContactEntity>> = repository.trustedContacts
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    // Hex Rescue & Guardian Cloud Dispatch StateFlows initialized directly
+    val allCloudHexAlerts: StateFlow<List<HexRescueAlert>> = repository.hexagonalRescueManager.allCloudHexAlerts
+
+    private val _activeGuardianHighAlert = MutableStateFlow<CloudEmergencyDispatch?>(null)
+    val activeGuardianHighAlert: StateFlow<CloudEmergencyDispatch?> = _activeGuardianHighAlert.asStateFlow()
+
+    private val _incomingGuardianAlerts = MutableStateFlow<List<CloudEmergencyDispatch>>(emptyList())
+    val incomingGuardianAlerts: StateFlow<List<CloudEmergencyDispatch>> = _incomingGuardianAlerts.asStateFlow()
+
     val guardianResponderAlertsByIncident: StateFlow<Map<String, HexRescueAlert>> = combine(
         incomingGuardianAlerts,
         allCloudHexAlerts
@@ -235,7 +244,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val activeIncomingHexAlert: StateFlow<HexRescueAlert?> = repository.hexagonalRescueManager.activeIncomingAlert
     val activeOutgoingHexAlert: StateFlow<HexRescueAlert?> = repository.hexagonalRescueManager.activeOutgoingAlert
     val nearbyHexAlerts: StateFlow<List<HexRescueAlert>> = repository.hexagonalRescueManager.nearbyHexAlerts
-    val allCloudHexAlerts: StateFlow<List<HexRescueAlert>> = repository.hexagonalRescueManager.allCloudHexAlerts
     val latestPoliceDossier: StateFlow<PoliceDispatchDossier?> = repository.emergencyResponseDispatcher.latestPoliceDossier
 
     val currentRiskAssessment: StateFlow<RiskAssessmentResult> = repository.currentRiskAssessment
@@ -347,24 +355,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _installedContactsMap = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     val installedContactsMap: StateFlow<Map<String, Boolean>> = _installedContactsMap.asStateFlow()
 
-    private val _activeGuardianHighAlert = MutableStateFlow<CloudEmergencyDispatch?>(null)
-    val activeGuardianHighAlert: StateFlow<CloudEmergencyDispatch?> = _activeGuardianHighAlert.asStateFlow()
     private val notifiedGuardianAlertIds = mutableSetOf<String>()
-
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val incomingGuardianAlerts: StateFlow<List<CloudEmergencyDispatch>> = currentUser
-        .flatMapLatest { user ->
-            val email = user?.email.orEmpty()
-            if (user == null || !authManager.isFirebaseConfigured()) {
-                flowOf(emptyList())
-            } else {
-                repository.emergencyDispatchRepository.observeIncomingGuardianAlerts(
-                    currentUid = user.uid,
-                    guardianEmail = email
-                )
-            }
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // Silent SOS (Stealth) Mode StateFlow — suppresses siren & flashlight when noise/light increases risk
     private val _isSilentMode = MutableStateFlow(false)
@@ -451,6 +442,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         } else if (!profile.antiSnatchEnabled && repository.sensorsManager.isSnatchDetectionActive.value) {
                             repository.sensorsManager.stopSnatchDetection()
                         }
+                    }
+                }
+            }
+        }
+
+        // Stream incoming guardian emergency dispatches with offline-resilient local Room cache
+        viewModelScope.launch {
+            // Cold-boot offline hydration from local Room database
+            try {
+                val cached = repository.getCachedGuardianDispatchesOnce()
+                if (cached.isNotEmpty() && _incomingGuardianAlerts.value.isEmpty()) {
+                    _incomingGuardianAlerts.value = cached
+                }
+            } catch (_: Exception) {}
+
+            @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+            currentUser.flatMapLatest { user ->
+                val email = user?.email.orEmpty()
+                if (user == null || !authManager.isFirebaseConfigured()) {
+                    repository.cachedGuardianDispatches
+                } else {
+                    repository.emergencyDispatchRepository.observeIncomingGuardianAlerts(
+                        currentUid = user.uid,
+                        guardianEmail = email
+                    )
+                }
+            }.collect { alerts ->
+                if (alerts.isNotEmpty()) {
+                    _incomingGuardianAlerts.value = alerts
+                    repository.cacheIncomingGuardianDispatches(alerts)
+                } else {
+                    val localCached = repository.getCachedGuardianDispatchesOnce()
+                    if (localCached.isNotEmpty()) {
+                        _incomingGuardianAlerts.value = localCached
+                    } else {
+                        _incomingGuardianAlerts.value = emptyList()
                     }
                 }
             }
@@ -2355,6 +2382,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             if (!isVideo && !isAudio) {
                 _statusEvents.tryEmit("Prepared ${evidence.title} for trusted contacts")
+            }
+        }
+    }
+
+    fun deleteEvidenceItem(incidentId: String) {
+        viewModelScope.launch {
+            try {
+                repository.deleteEvidenceForIncident(incidentId)
+                _statusEvents.tryEmit("Evidence removed from vault")
+            } catch (e: Exception) {
+                _statusEvents.tryEmit("Error removing evidence: ${e.message}")
             }
         }
     }

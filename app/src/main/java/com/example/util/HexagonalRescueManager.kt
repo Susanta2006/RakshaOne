@@ -14,8 +14,12 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.example.MainActivity
 import com.example.R
+import com.example.data.AppDatabase
+import com.example.data.dao.CachedIncomingAlertDao
 import com.example.data.model.HexAlertStatus
 import com.example.data.model.HexRescueAlert
+import com.example.data.model.toCachedEntity
+import com.example.data.model.toHexRescueAlert
 import com.example.data.repository.FirestoreRiskAndRescueRepository
 import com.example.risk.HexRescueLifecycleState
 import com.example.risk.PoliceEscalationStatus
@@ -39,17 +43,40 @@ import kotlin.math.sqrt
  *   (750m -> 1500m -> 3000m -> 5000m every 30s) over Firestore + Bluetooth LE.
  * - Responder: Only VERIFIED citizens with volunteer duty ON receive nearby Help Requests
  *   on their device & Dispatch Screen with Uber-style Accept -> En Route -> Arrived -> Complete flow.
+ * - Local Room Database Caching: All alerts are cached in Room for instant display & responder actions during network outages.
  * - NO mock or simulated alerts.
  */
 class HexagonalRescueManager(
     private val context: Context,
     private val goodCitizenManager: GoodCitizenManager,
     private val bleEmergencyRelay: BleEmergencyRelay? = null,
-    private val firestoreRepository: FirestoreRiskAndRescueRepository? = null
+    private val firestoreRepository: FirestoreRiskAndRescueRepository? = null,
+    private val cachedIncomingAlertDao: CachedIncomingAlertDao? = null
 ) {
     private val scope = CoroutineScope(Dispatchers.IO)
     private var countdownJob: Job? = null
     private val notifiedAlertIds = mutableSetOf<String>()
+
+    private val alertDao: CachedIncomingAlertDao by lazy {
+        cachedIncomingAlertDao ?: AppDatabase.getDatabase(context).cachedIncomingAlertDao()
+    }
+
+    init {
+        // Hydrate active alerts from local Room cache immediately on startup / offline mode
+        scope.launch {
+            try {
+                val cached = alertDao.getActiveHexAlertsOnce()
+                if (cached.isNotEmpty()) {
+                    val alerts = cached.map { it.toHexRescueAlert() }
+                    latestCloudAlerts = alerts
+                    recomputeNearbyAlerts()
+                    Log.i("HexRescueManager", "Restored ${alerts.size} active emergency alerts from local Room cache")
+                }
+            } catch (e: Exception) {
+                Log.w("HexRescueManager", "Could not restore cached alerts: ${e.message}")
+            }
+        }
+    }
 
     private val _activeIncomingAlert = MutableStateFlow<HexRescueAlert?>(null)
     val activeIncomingAlert: StateFlow<HexRescueAlert?> = _activeIncomingAlert.asStateFlow()
@@ -219,7 +246,19 @@ class HexagonalRescueManager(
         bleDiscoveries: List<BleDiscoveredEmergency>? = null,
         myLocation: Location? = latestResponderLocation
     ) {
-        if (cloudAlerts != null) latestCloudAlerts = cloudAlerts
+        if (cloudAlerts != null) {
+            latestCloudAlerts = cloudAlerts
+            val toCache = cloudAlerts.filter { !it.isOutgoingFromSelf && it.status != HexAlertStatus.RESOLVED && it.status != HexAlertStatus.EXPIRED }
+                .map { it.toCachedEntity() }
+            if (toCache.isNotEmpty()) {
+                scope.launch {
+                    try {
+                        alertDao.insertAlerts(toCache)
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+        }
         if (bleDiscoveries != null) latestBleDiscoveries = bleDiscoveries
         latestResponderLocation = myLocation
         recomputeNearbyAlerts()
@@ -323,7 +362,7 @@ class HexagonalRescueManager(
                 } else {
                     ble.sectorHint
                 }
-                mergedByIncident[ble.incidentId] = HexRescueAlert(
+                val bleAlert = HexRescueAlert(
                     alertId = ble.incidentId,
                     incidentId = ble.incidentId,
                     victimName = "Nearby Citizen (Bluetooth LE)",
@@ -345,6 +384,13 @@ class HexagonalRescueManager(
                     policeDispatched = false,
                     policeStatus = PoliceEscalationStatus.ELIGIBLE
                 )
+                mergedByIncident[ble.incidentId] = bleAlert
+                scope.launch {
+                    try {
+                        alertDao.insertAlert(bleAlert.toCachedEntity())
+                    } catch (_: Exception) {
+                    }
+                }
             }
         }
 
@@ -359,14 +405,22 @@ class HexagonalRescueManager(
         val inPerimeterAlerts = allSorted.filter { alert ->
             alert.status == HexAlertStatus.BROADCASTING &&
                 (alert.distanceMeters <= alert.currentRadiusMeters.coerceAtLeast(profile.volunteerRadiusMeters) || alert.sourceChannel.contains("BLE"))
-        }.take(5)
+        }.take(20)
 
-        if (inPerimeterAlerts.isNotEmpty()) {
+        val currentOngoing = _activeIncomingAlert.value
+        val isRescueInProgress = currentOngoing != null && (
+            currentOngoing.status == HexAlertStatus.ACCEPTED ||
+            currentOngoing.status == HexAlertStatus.EN_ROUTE ||
+            currentOngoing.status == HexAlertStatus.ARRIVED
+        )
+
+        if (!isRescueInProgress && inPerimeterAlerts.isNotEmpty()) {
             _activeIncomingAlert.value = inPerimeterAlerts.first()
-            inPerimeterAlerts.forEach { alert ->
-                if (notifiedAlertIds.add(alert.alertId)) {
-                    postHexRescueNotification(alert)
-                }
+        }
+
+        inPerimeterAlerts.forEach { alert ->
+            if (notifiedAlertIds.add(alert.alertId)) {
+                postHexRescueNotification(alert)
             }
         }
     }
@@ -486,11 +540,32 @@ class HexagonalRescueManager(
         goodCitizenManager.recordDeclinedHelp(current.incidentId)
         _activeIncomingAlert.value = null
         _nearbyHexAlerts.value = _nearbyHexAlerts.value.filterNot { it.alertId == alertId }
+        scope.launch {
+            try {
+                alertDao.deleteAlert(alertId)
+            } catch (_: Exception) {
+            }
+        }
         return true
     }
 
     fun dismissIncomingAlert() {
         _activeIncomingAlert.value = null
+    }
+
+    fun reloadFromLocalCache() {
+        scope.launch {
+            try {
+                val cached = alertDao.getActiveHexAlertsOnce()
+                if (cached.isNotEmpty()) {
+                    latestCloudAlerts = cached.map { it.toHexRescueAlert() }
+                    recomputeNearbyAlerts()
+                    Log.i("HexRescueManager", "Reloaded ${cached.size} active emergency alerts from Room database cache")
+                }
+            } catch (e: Exception) {
+                Log.w("HexRescueManager", "Failed reloading cached alerts: ${e.message}")
+            }
+        }
     }
 
     private fun applyAlertUpdate(updated: HexRescueAlert) {
@@ -505,6 +580,14 @@ class HexagonalRescueManager(
             list.add(0, updated)
         }
         _nearbyHexAlerts.value = list
+        if (!updated.isOutgoingFromSelf) {
+            scope.launch {
+                try {
+                    alertDao.insertAlert(updated.toCachedEntity())
+                } catch (_: Exception) {
+                }
+            }
+        }
     }
 
     private fun syncLifecycleToCloud(alert: HexRescueAlert, state: HexRescueLifecycleState) {

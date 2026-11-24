@@ -37,6 +37,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BluetoothConnected
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Explore
@@ -46,6 +48,7 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Navigation
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -118,6 +121,7 @@ fun GovernmentDashboardScreen(
     val allIncidents by viewModel.allIncidents.collectAsState()
     val activeIncidents by viewModel.activeIncidents.collectAsState()
     val auditLogs by viewModel.auditLogs.collectAsState()
+    val allEvidence by viewModel.allEvidence.collectAsState()
     val realTimeLocation by viewModel.realTimeLocation.collectAsState()
     val nearbyHexAlerts by viewModel.nearbyHexAlerts.collectAsState()
     val allCloudHexAlerts by viewModel.allCloudHexAlerts.collectAsState()
@@ -357,7 +361,7 @@ fun GovernmentDashboardScreen(
                         onClick = { selectedSection = 3 },
                         text = {
                             Text(
-                                "Audit (${auditLogs.size})",
+                                "Vaults (${allEvidence.size})",
                                 fontSize = 11.sp,
                                 fontWeight = if (selectedSection == 3) FontWeight.Bold else FontWeight.Medium,
                                 color = if (selectedSection == 3) Color.White else Color.White.copy(alpha = 0.7f),
@@ -693,33 +697,135 @@ fun GovernmentDashboardScreen(
                 }
 
                 3 -> {
-                    if (auditLogs.isEmpty()) {
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 12.dp),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = CardDefaults.cardColors(containerColor = TacticalSurface),
-                            border = BorderStroke(1.dp, TacticalBorder)
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(24.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Icon(Icons.Default.History, contentDescription = null, tint = PoliceBlue, modifier = Modifier.size(36.dp))
-                                Text("No Audit Entries Recorded", color = Color.White, fontWeight = FontWeight.Bold)
+                    val acceptedHelpers = allCloudHexAlerts.filter { !it.acceptedResponderUid.isNullOrBlank() || it.status in listOf(HexAlertStatus.ACCEPTED, HexAlertStatus.EN_ROUTE, HexAlertStatus.ARRIVED) }
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        item {
+                            Text(
+                                "Connected Responders & Helpers (${acceptedHelpers.size})",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                        }
+                        if (acceptedHelpers.isEmpty()) {
+                            item {
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = CardDefaults.cardColors(containerColor = TacticalCard),
+                                    border = BorderStroke(1.dp, TacticalBorder)
+                                ) {
+                                    Text(
+                                        "No active responders assigned yet. When nearby verified citizens accept via Bluetooth Hex mesh or Cloud, their contact info and live avatar will appear here.",
+                                        color = Color.White.copy(alpha = 0.7f),
+                                        fontSize = 12.sp,
+                                        modifier = Modifier.padding(16.dp)
+                                    )
+                                }
+                            }
+                        } else {
+                            items(acceptedHelpers, key = { "helper_${it.alertId}" }) { helper ->
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = CardDefaults.cardColors(containerColor = TacticalCard),
+                                    border = BorderStroke(1.dp, SafetyTeal)
+                                ) {
+                                    Column(modifier = Modifier.padding(12.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = helper.acceptedResponderName ?: "Verified Helper",
+                                                fontWeight = FontWeight.Bold,
+                                                color = SafetyTeal,
+                                                fontSize = 14.sp
+                                            )
+                                            Surface(
+                                                color = SafetyTeal.copy(alpha = 0.2f),
+                                                shape = RoundedCornerShape(6.dp)
+                                            ) {
+                                                Text(
+                                                    text = helper.status.name,
+                                                    color = SafetyTeal,
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "Phone: ${helper.acceptedResponderPhone ?: "Securely Linked"} • Distance: ${helper.distanceMeters.toInt()}m (${helper.estimatedWalkMinutes} min walk)",
+                                            color = Color.White.copy(alpha = 0.85f),
+                                            fontSize = 12.sp
+                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            if (!helper.acceptedResponderPhone.isNullOrBlank()) {
+                                                Button(
+                                                    onClick = { viewModel.dialNumber(helper.acceptedResponderPhone!!) },
+                                                    colors = ButtonDefaults.buttonColors(containerColor = SafetyTeal),
+                                                    modifier = Modifier.weight(1f)
+                                                ) {
+                                                    Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text("Call Helper", fontSize = 12.sp)
+                                                }
+                                            }
+                                            OutlinedButton(
+                                                onClick = {
+                                                    if (helper.acceptedResponderLat != null && helper.acceptedResponderLng != null) {
+                                                        viewModel.openIncidentInMaps(helper.acceptedResponderLat!!, helper.acceptedResponderLng!!, helper.acceptedResponderName ?: "Helper")
+                                                    }
+                                                },
+                                                border = BorderStroke(1.dp, SafetyTeal),
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Icon(Icons.Default.Navigation, contentDescription = null, tint = SafetyTeal, modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("Track on Map", color = SafetyTeal, fontSize = 12.sp)
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
-                    } else {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            items(auditLogs) { log ->
-                                val dateStr = SimpleDateFormat("HH:mm:ss dd-MMM", Locale.getDefault()).format(Date(log.timestamp))
+
+                        item {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                "Evidence Vault (${allEvidence.size}) • Audio, Photos & Videos",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                        }
+
+                        if (allEvidence.isEmpty()) {
+                            item {
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = CardDefaults.cardColors(containerColor = TacticalCard),
+                                    border = BorderStroke(1.dp, TacticalBorder)
+                                ) {
+                                    Text(
+                                        "No evidence files in vault. Captured audio recordings, dual-camera snapshots, and video clips from emergency activations are automatically transferred here and synced to Firebase.",
+                                        color = Color.White.copy(alpha = 0.7f),
+                                        fontSize = 12.sp,
+                                        modifier = Modifier.padding(16.dp)
+                                    )
+                                }
+                            }
+                        } else {
+                            items(allEvidence, key = { "ev_${it.evidenceId}" }) { ev ->
+                                val evDate = SimpleDateFormat("HH:mm:ss dd-MMM", Locale.getDefault()).format(Date(ev.uploadTime))
                                 Card(
                                     modifier = Modifier.fillMaxWidth(),
                                     colors = CardDefaults.cardColors(containerColor = TacticalCard),
@@ -733,35 +839,50 @@ fun GovernmentDashboardScreen(
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Text(
-                                                text = log.action,
+                                                text = "${ev.fileType} • ${ev.incidentId}",
                                                 fontWeight = FontWeight.Bold,
-                                                color = PoliceBlue,
-                                                fontSize = 12.sp,
-                                                fontFamily = FontFamily.Monospace,
-                                                modifier = Modifier.weight(1f),
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
+                                                color = EmergencyRed,
+                                                fontSize = 12.sp
                                             )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text(text = dateStr, color = Color.White.copy(alpha = 0.6f), fontSize = 10.sp)
+                                            Text(text = evDate, color = Color.White.copy(alpha = 0.6f), fontSize = 10.sp)
                                         }
                                         Spacer(modifier = Modifier.height(4.dp))
                                         Text(
-                                            text = "By ${log.actor} (${log.role}) • Target: ${log.targetId}",
-                                            color = Color.White.copy(alpha = 0.85f),
-                                            fontSize = 11.sp
+                                            text = ev.storageLocation.ifBlank { "Cloud Synced Evidence Asset" },
+                                            color = Color.White.copy(alpha = 0.8f),
+                                            fontSize = 11.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
-                                        Spacer(modifier = Modifier.height(2.dp))
-                                        Text(
-                                            text = log.details,
-                                            color = Color.White.copy(alpha = 0.68f),
-                                            fontSize = 11.sp
-                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Button(
+                                                onClick = { viewModel.shareVaultEvidenceFile(ev) },
+                                                colors = ButtonDefaults.buttonColors(containerColor = PoliceBlue),
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("Download / Share", fontSize = 11.sp)
+                                            }
+                                            OutlinedButton(
+                                                onClick = { viewModel.deleteEvidenceItem(ev.incidentId) },
+                                                border = BorderStroke(1.dp, EmergencyRed),
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Icon(Icons.Default.Close, contentDescription = null, tint = EmergencyRed, modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("Delete", color = EmergencyRed, fontSize = 11.sp)
+                                            }
+                                        }
                                     }
                                 }
                             }
-                            item { Spacer(modifier = Modifier.height(16.dp)) }
                         }
+                        item { Spacer(modifier = Modifier.height(16.dp)) }
                     }
                 }
             }

@@ -6,6 +6,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.data.dao.AuditLogDao
+import com.example.data.dao.CachedIncomingAlertDao
 import com.example.data.dao.DossierAccessDao
 import com.example.data.dao.EscalationWorkflowDao
 import com.example.data.dao.EvidenceDao
@@ -24,6 +25,7 @@ import com.example.data.dao.TripWaypointDao
 import com.example.data.dao.TrustedContactDao
 import com.example.data.dao.UserDao
 import com.example.data.model.AuditLogEntity
+import com.example.data.model.CachedIncomingAlertEntity
 import com.example.data.model.DossierAccessEntity
 import com.example.data.model.EscalationWorkflowEntity
 import com.example.data.model.EvidenceEntity
@@ -64,9 +66,10 @@ import kotlinx.coroutines.launch
         PointsLedgerEntity::class,
         DossierAccessEntity::class,
         LocationBreadcrumbEntity::class,
-        LearnedPlaceEntity::class
+        LearnedPlaceEntity::class,
+        CachedIncomingAlertEntity::class
     ],
-    version = 10,
+    version = 11,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -88,6 +91,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun dossierAccessDao(): DossierAccessDao
     abstract fun locationBreadcrumbDao(): LocationBreadcrumbDao
     abstract fun learnedPlaceDao(): LearnedPlaceDao
+    abstract fun cachedIncomingAlertDao(): CachedIncomingAlertDao
 
     companion object {
         @Volatile
@@ -212,6 +216,58 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        internal val MIGRATION_10_11 = object : androidx.room.migration.Migration(10, 11) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `cached_incoming_alerts` (
+                        `alertId` TEXT NOT NULL,
+                        `incidentId` TEXT NOT NULL,
+                        `alertType` TEXT NOT NULL,
+                        `victimUid` TEXT NOT NULL,
+                        `victimName` TEXT NOT NULL,
+                        `victimPhone` TEXT NOT NULL,
+                        `victimLatitude` REAL NOT NULL,
+                        `victimLongitude` REAL NOT NULL,
+                        `currentRadiusMeters` REAL NOT NULL,
+                        `expansionStage` INTEGER NOT NULL,
+                        `secondsRemainingInStage` INTEGER NOT NULL,
+                        `dangerType` TEXT NOT NULL,
+                        `timestamp` INTEGER NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `lifecycleState` TEXT NOT NULL,
+                        `compassSector` TEXT NOT NULL,
+                        `sourceChannel` TEXT NOT NULL,
+                        `evidenceSummary` TEXT NOT NULL,
+                        `victimLocationDescription` TEXT NOT NULL,
+                        `frontCameraThumbnailB64` TEXT NOT NULL,
+                        `rearPhotoBase64` TEXT NOT NULL,
+                        `distanceMeters` REAL NOT NULL,
+                        `estimatedWalkMinutes` INTEGER NOT NULL,
+                        `policeDispatched` INTEGER NOT NULL,
+                        `policeStatus` TEXT NOT NULL,
+                        `acceptedResponderUid` TEXT,
+                        `acceptedResponderName` TEXT,
+                        `acceptedResponderPhone` TEXT,
+                        `acceptedResponderSelfieB64` TEXT,
+                        `acceptedResponderLat` REAL,
+                        `acceptedResponderLng` REAL,
+                        `isOutgoingFromSelf` INTEGER NOT NULL,
+                        `batteryPercent` INTEGER NOT NULL,
+                        `medicalSummary` TEXT NOT NULL,
+                        `mapsUrl` TEXT NOT NULL,
+                        `authorizedEmailsCsv` TEXT NOT NULL,
+                        `authorizedPhonesCsv` TEXT NOT NULL,
+                        `authorizedUidsCsv` TEXT NOT NULL,
+                        `deviceLocked` INTEGER NOT NULL,
+                        `cachedAtMillis` INTEGER NOT NULL,
+                        PRIMARY KEY(`alertId`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -219,7 +275,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "rakshaone_emergency_database"
                 )
-                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
                     .fallbackToDestructiveMigration(false)
                     .addCallback(DatabaseCallback())
                     .build()
